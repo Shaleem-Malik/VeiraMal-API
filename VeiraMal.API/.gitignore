@@ -19,6 +19,7 @@ obj/
 *.dcvr
 
 # Configuration
+appsettings.json                    # ✅ Prevent committing default secrets
 appsettings.Development.json
 appsettings.*.local.json
 .env
