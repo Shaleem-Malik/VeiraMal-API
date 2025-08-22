@@ -4,11 +4,15 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using System.Text;
+using VeiraMal.API.Services.Interfaces;
+using VeiraMal.API.Services;
+
+ExcelPackage.License.SetNonCommercialPersonal("Your Name");
 
 var builder = WebApplication.CreateBuilder(args);
-
-// EPPlus License
-ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+builder.Services.AddScoped<IHeadcountService, HeadcountService>();
+builder.Services.AddScoped<INHTService, NHTService>();
+builder.Services.AddScoped<ITermsService, TermsService>();
 
 // ✅ Read JWT config from appsettings.json
 var jwtSettings = builder.Configuration.GetSection("Jwt");
@@ -22,10 +26,20 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+
 // ✅ Add DbContext
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection"))
-);
+    options.UseSqlServer(
+        builder.Configuration.GetConnectionString("DefaultConnection"),
+        sqlServerOptions =>
+        {
+            sqlServerOptions.EnableRetryOnFailure(
+                maxRetryCount: 5,
+                maxRetryDelay: TimeSpan.FromSeconds(30),
+                errorNumbersToAdd: null);
+            sqlServerOptions.CommandTimeout(180); // 3 minutes for command timeout
+        }
+    ));
 
 // ✅ Add JWT Authentication
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -63,7 +77,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-app.UseHttpsRedirection();
+//app.UseHttpsRedirection();
 
 app.UseRouting();
 

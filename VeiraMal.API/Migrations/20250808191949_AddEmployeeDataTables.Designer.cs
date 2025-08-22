@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using VeiraMal.API;
 
@@ -11,9 +12,11 @@ using VeiraMal.API;
 namespace VeiraMal.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250808191949_AddEmployeeDataTables")]
+    partial class AddEmployeeDataTables
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,31 +24,6 @@ namespace VeiraMal.API.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
-
-            modelBuilder.Entity("VeiraMal.API.Models.AnalysisHistory", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime>("AnalysisDate")
-                        .HasColumnType("datetime2");
-
-                    b.Property<string>("HeadcountData")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("NHTData")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("TermsData")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.HasKey("Id");
-
-                    b.ToTable("AnalysisHistory");
-                });
 
             modelBuilder.Entity("VeiraMal.API.Models.Employee", b =>
                 {
@@ -378,6 +356,7 @@ namespace VeiraMal.API.Migrations
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("Month")
+                        .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("OrganizationalKey")

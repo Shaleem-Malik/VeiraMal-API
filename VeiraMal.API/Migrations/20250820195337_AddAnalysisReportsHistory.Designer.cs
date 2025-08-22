@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using VeiraMal.API;
 
@@ -11,9 +12,11 @@ using VeiraMal.API;
 namespace VeiraMal.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20250820195337_AddAnalysisReportsHistory")]
+    partial class AddAnalysisReportsHistory
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -22,7 +25,7 @@ namespace VeiraMal.API.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
-            modelBuilder.Entity("VeiraMal.API.Models.AnalysisHistory", b =>
+            modelBuilder.Entity("VeiraMal.API.Models.AnalysisReportHistory", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -30,21 +33,18 @@ namespace VeiraMal.API.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<DateTime>("AnalysisDate")
+                    b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
-                    b.Property<string>("HeadcountData")
+                    b.Property<string>("DataJson")
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<string>("NHTData")
-                        .HasColumnType("nvarchar(max)");
-
-                    b.Property<string>("TermsData")
+                    b.Property<string>("ReportName")
                         .HasColumnType("nvarchar(max)");
 
                     b.HasKey("Id");
 
-                    b.ToTable("AnalysisHistory");
+                    b.ToTable("AnalysisReportsHistory");
                 });
 
             modelBuilder.Entity("VeiraMal.API.Models.Employee", b =>
