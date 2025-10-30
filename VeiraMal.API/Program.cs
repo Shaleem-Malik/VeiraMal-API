@@ -226,6 +226,7 @@ using (var scope = app.Services.CreateScope())
     }
     
     logger.LogInformation("🏁 DATABASE DIAGNOSTICS COMPLETE");
+    logger.LogInformation("🎯 APPLICATION STARTED SUCCESSFULLY");
 }
 
 // --------------------- Pipeline Configuration ---------------------
@@ -240,7 +241,5 @@ app.UseCors("AllowLocalhost3000");
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
-
-logger.LogInformation("🎯 APPLICATION STARTED SUCCESSFULLY");
 
 app.Run();
