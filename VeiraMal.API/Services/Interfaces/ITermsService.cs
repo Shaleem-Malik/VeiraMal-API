@@ -10,5 +10,6 @@ namespace VeiraMal.API.Services.Interfaces
         Task<int> UploadTermsExcelAsync(IFormFile file);
         Task<IEnumerable<Terms>> GetAllTermsAsync();
         Task<object> GetTurnoverAnalysisAsync();
+        Task<IEnumerable<object>> GetFinanceAnalysisAsync(string month);
     }
 }

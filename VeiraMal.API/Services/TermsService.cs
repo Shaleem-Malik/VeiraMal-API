@@ -79,11 +79,16 @@ namespace VeiraMal.API.Services
             if (termsList.Count == 0)
                 throw new ArgumentException("No valid Terms data found in the file.");
 
+            // Delete old data before inserting new
+            _context.Terms.RemoveRange(_context.Terms);
+            await _context.SaveChangesAsync();
+
             await _context.Terms.AddRangeAsync(termsList);
             await _context.SaveChangesAsync();
 
             return termsList.Count;
         }
+
 
         public async Task<IEnumerable<Terms>> GetAllTermsAsync()
         {
@@ -148,5 +153,72 @@ namespace VeiraMal.API.Services
 
             return turnoverAnalysis;
         }
+
+        public async Task<IEnumerable<object>> GetFinanceAnalysisAsync(string month)
+        {
+            // Only Finance records for the given month
+            var financeTerms = await _context.Terms
+                .AsNoTracking()
+                .Where(t => t.OrganizationalKey == "Finance" && t.Month == month)
+                .ToListAsync();
+
+            if (!financeTerms.Any())
+                return Enumerable.Empty<object>();
+
+            // Also load Finance headcount for denominator calculations
+            var financeHeadcounts = await _context.Headcounts
+                .AsNoTracking()
+                .Where(h => h.OrganizationalKey == "Finance" && h.Month == month)
+                .GroupBy(h => h.OrganizationalUnit)
+                .Select(g => new
+                {
+                    Unit = g.Key ?? "Unknown",
+                    TotalCount = g.Count(),
+                    MaleCount = g.Count(h => h.GenderKey == "Male"),
+                    FemaleCount = g.Count(h => h.GenderKey == "Female")
+                })
+                .ToListAsync();
+
+            return financeTerms
+                .GroupBy(t => t.OrganizationalUnit ?? "Unknown") // group by unit inside Finance
+                .Select(g =>
+                {
+                    var unit = g.Key;
+                    var unitHeadcount = financeHeadcounts.FirstOrDefault(h => h.Unit == unit)
+                        ?? new { Unit = unit, TotalCount = 0, MaleCount = 0, FemaleCount = 0 };
+
+                    var voluntary = g.Where(t =>
+                        t.Action?.Equals("Voluntary", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Resignation", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Retirement", StringComparison.OrdinalIgnoreCase) == true);
+
+                    var involuntary = g.Where(t =>
+                        t.Action?.Equals("Involuntary", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Termination", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Retrenchment", StringComparison.OrdinalIgnoreCase) == true);
+
+                    double SafeRate(int num, int den) => den > 0 ? Math.Round(num * 100.0 / den, 2) : 0;
+
+                    return new
+                    {
+                        OrganizationalUnit = unit,
+                        VoluntaryTotalRate = SafeRate(voluntary.Count(), unitHeadcount.TotalCount),
+                        VoluntaryTotalCount = voluntary.Count(),
+                        VoluntaryMaleRate = SafeRate(voluntary.Count(t => t.GenderKey == "Male"), unitHeadcount.MaleCount),
+                        VoluntaryMaleCount = voluntary.Count(t => t.GenderKey == "Male"),
+                        VoluntaryFemaleRate = SafeRate(voluntary.Count(t => t.GenderKey == "Female"), unitHeadcount.FemaleCount),
+                        VoluntaryFemaleCount = voluntary.Count(t => t.GenderKey == "Female"),
+                        InvoluntaryTotalRate = SafeRate(involuntary.Count(), unitHeadcount.TotalCount),
+                        InvoluntaryTotalCount = involuntary.Count(),
+                        InvoluntaryMaleRate = SafeRate(involuntary.Count(t => t.GenderKey == "Male"), unitHeadcount.MaleCount),
+                        InvoluntaryMaleCount = involuntary.Count(t => t.GenderKey == "Male"),
+                        InvoluntaryFemaleRate = SafeRate(involuntary.Count(t => t.GenderKey == "Female"), unitHeadcount.FemaleCount),
+                        InvoluntaryFemaleCount = involuntary.Count(t => t.GenderKey == "Female")
+                    };
+                })
+                .OrderBy(r => r.OrganizationalUnit)
+                .ToList();
+        }
+
     }
 }

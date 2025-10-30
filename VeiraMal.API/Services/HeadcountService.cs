@@ -18,10 +18,18 @@ namespace VeiraMal.API.Services
         public async Task<string> UploadAsync(IFormFile file)
         {
             var list = await ParseExcelFileAsync(file);
+
+            // Remove all existing headcount records
+            _context.Headcounts.RemoveRange(_context.Headcounts);
+            await _context.SaveChangesAsync();
+
+            // Insert the new list
             await _context.Headcounts.AddRangeAsync(list);
             await _context.SaveChangesAsync();
-            return $"{list.Count} headcount records successfully uploaded";
+
+            return $"{list.Count} headcount records successfully uploaded (old data replaced)";
         }
+
 
         public async Task<IEnumerable<Headcount>> GetAllAsync()
         {
@@ -72,6 +80,75 @@ namespace VeiraMal.API.Services
                 .OrderByDescending(d => d.Headcount)
                 .ToList();
         }
+
+        public async Task<IEnumerable<object>> GetFinanceAnalysisAsync(string month, string organizationalKey = "Finance")
+        {
+            // Normalize inputs and provide sensible defaults
+            var monthNorm = (month ?? "").Trim();
+            if (string.IsNullOrEmpty(monthNorm))
+                monthNorm = DateTime.UtcNow.ToString("MMMM"); // default to current month name
+
+            var orgKeyToFilter = string.IsNullOrWhiteSpace(organizationalKey) ? "Finance" : organizationalKey.Trim();
+
+            // Lowercase both sides for case-insensitive comparison (EF Core translates ToLower to SQL)
+            var monthLower = monthNorm.ToLower();
+            var orgKeyLower = orgKeyToFilter.ToLower();
+
+            var financeEmployees = await _context.Headcounts
+                .AsNoTracking()
+                .Where(e => ((e.OrganizationalKey ?? "").ToLower() == orgKeyLower)
+                         && ((e.Month ?? "").ToLower() == monthLower))
+                .ToListAsync();
+
+            return financeEmployees
+                .GroupBy(e => e.OrganizationalUnit)  // Group by unit within the specified org key
+                .Select(g =>
+                {
+                    var totalInUnit = g.Count();
+                    var tempCount = g.Count(e => e.Status?.Contains("Temporary", StringComparison.OrdinalIgnoreCase) ?? false);
+                    var permanentCount = totalInUnit - tempCount;
+
+                    var maleCount = g.Count(e => e.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) ?? false);
+                    var femaleCount = g.Count(e => e.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) ?? false);
+
+                    // tenure calc
+                    var tenureSum = 0;
+                    var tenureCount = 0;
+                    foreach (var emp in g)
+                    {
+                        if (int.TryParse(emp.Tenure, out int tenure))
+                        {
+                            tenureSum += tenure;
+                            tenureCount++;
+                        }
+                    }
+                    var avgTenure = tenureCount > 0 ? tenureSum / (double)tenureCount : 0;
+
+                    return new
+                    {
+                        OrganizationalUnit = g.Key ?? "Unknown",
+                        Headcount = totalInUnit,
+                        HeadcountPercentage = totalInUnit > 0 ? Math.Round(permanentCount * 100.0 / totalInUnit, 2) : 0,
+                        TempPercentage = totalInUnit > 0 ? Math.Round(tempCount * 100.0 / totalInUnit, 2) : 0,
+
+                        MaleCount = maleCount,
+                        MalePercentage = totalInUnit > 0 ? Math.Round(maleCount * 100.0 / totalInUnit, 2) : 0,
+
+                        FemaleCount = femaleCount,
+                        FemalePercentage = totalInUnit > 0 ? Math.Round(femaleCount * 100.0 / totalInUnit, 2) : 0,
+
+                        TempCount = tempCount,
+                        AverageAge = totalInUnit > 0 ? Math.Round(g.Average(e => e.AgeOfEmployee), 2) : 0,
+                        AverageTenure = Math.Round(avgTenure, 2)
+                    };
+                })
+                .OrderByDescending(d => d.Headcount)
+                .ToList();
+        }
+
+
+
+
 
         private async Task<List<Headcount>> ParseExcelFileAsync(IFormFile file)
         {

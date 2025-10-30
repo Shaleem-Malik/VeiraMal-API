@@ -43,5 +43,12 @@ namespace VeiraMal.API.Controllers
             var result = await _termsService.GetTurnoverAnalysisAsync();
             return Ok(result);
         }
+
+        [HttpGet("finance-analysis")]
+        public async Task<IActionResult> GetFinanceAnalysis([FromQuery] string month)
+        {
+            var result = await _termsService.GetFinanceAnalysisAsync(month);
+            return Ok(result);
+        }
     }
 }

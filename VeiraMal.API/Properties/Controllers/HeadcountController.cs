@@ -35,5 +35,12 @@ namespace VeiraMal.API.Controllers
         {
             return Ok(await _headcountService.GetAnalysisAsync());
         }
+
+        [HttpGet("finance-analysis")]
+        public async Task<IActionResult> GetFinanceAnalysis([FromQuery] string month = "April", [FromQuery] string organizationalKey = "Finance")
+        {
+            var result = await _headcountService.GetFinanceAnalysisAsync(month, organizationalKey);
+            return Ok(result);
+        }
     }
 }

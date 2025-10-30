@@ -22,6 +22,26 @@ namespace VeiraMal.API.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("VeiraMal.API.Models.AccessLevel", b =>
+                {
+                    b.Property<int>("AccessLevelId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("AccessLevelId"));
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("AccessLevelId");
+
+                    b.ToTable("AccessLevels", "dbo");
+                });
+
             modelBuilder.Entity("VeiraMal.API.Models.AnalysisHistory", b =>
                 {
                     b.Property<int>("Id")
@@ -30,11 +50,17 @@ namespace VeiraMal.API.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<DateTime>("AnalysisDate")
+                    b.Property<DateTime>("CreatedAt")
                         .HasColumnType("datetime2");
 
                     b.Property<string>("HeadcountData")
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsFinal")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("Month")
+                        .HasColumnType("int");
 
                     b.Property<string>("NHTData")
                         .HasColumnType("nvarchar(max)");
@@ -42,9 +68,125 @@ namespace VeiraMal.API.Migrations
                     b.Property<string>("TermsData")
                         .HasColumnType("nvarchar(max)");
 
+                    b.Property<int>("Year")
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
 
                     b.ToTable("AnalysisHistory");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.BusinessUnit", b =>
+                {
+                    b.Property<int>("BusinessUnitId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("BusinessUnitId"));
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("BusinessUnitId");
+
+                    b.ToTable("BusinessUnits", "dbo");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.Company", b =>
+                {
+                    b.Property<Guid>("CompanyId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("CompanyABN")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("CompanyName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("ContactNumber")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Location")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid?>("ParentCompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("CompanyId");
+
+                    b.HasIndex("ParentCompanyId");
+
+                    b.ToTable("Companies", "dbo");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.CompanySubscription", b =>
+                {
+                    b.Property<Guid>("CompanySubscriptionId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal>("AdditionalSeatPriceSnapshot")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<int>("AdditionalSeatsPurchased")
+                        .HasColumnType("int");
+
+                    b.Property<int>("BaseUserSeatsSnapshot")
+                        .HasColumnType("int");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime?>("EndDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<decimal>("MonthlyPriceSnapshot")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("PlanNameSnapshot")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("StartDate")
+                        .HasColumnType("datetime2");
+
+                    b.Property<Guid>("SubscriptionPlanId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("CompanySubscriptionId");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("SubscriptionPlanId");
+
+                    b.ToTable("CompanySubscriptions", "dbo");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.CompanySuperUserAssignment", b =>
+                {
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("UserId")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("AssignedAt")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("CompanyId", "UserId");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("CompanySuperUserAssignments", "dbo");
                 });
 
             modelBuilder.Entity("VeiraMal.API.Models.Employee", b =>
@@ -287,6 +429,157 @@ namespace VeiraMal.API.Migrations
                     b.ToTable("NHTs", (string)null);
                 });
 
+            modelBuilder.Entity("VeiraMal.API.Models.RevokedToken", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Jti")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Reason")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("RevokedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int?>("UserId")
+                        .HasColumnType("int");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("RevokedTokens");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.SubscriptionPlan", b =>
+                {
+                    b.Property<Guid>("SubscriptionPlanId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<decimal?>("AdditionalSeatPrice")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<bool>("AdditionalSeatsAllowed")
+                        .HasColumnType("bit");
+
+                    b.Property<int>("BaseUserSeats")
+                        .HasColumnType("int");
+
+                    b.Property<bool>("HasApi")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("IdealFor")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("KeyFeatures")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int?>("MaxHC")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Package")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<decimal?>("PricePerMonth")
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<string>("ReportingLevel")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("SuperUsers")
+                        .HasColumnType("int");
+
+                    b.HasKey("SubscriptionPlanId");
+
+                    b.ToTable("SubscriptionPlans", "dbo");
+
+                    b.HasData(
+                        new
+                        {
+                            SubscriptionPlanId = new Guid("11111111-1111-1111-1111-111111111111"),
+                            AdditionalSeatPrice = 0m,
+                            AdditionalSeatsAllowed = false,
+                            BaseUserSeats = 1,
+                            HasApi = false,
+                            IdealFor = "Overview",
+                            KeyFeatures = "Can explore by seeing dummy reports etc",
+                            MaxHC = 50,
+                            Package = "Demo",
+                            PricePerMonth = 0m,
+                            ReportingLevel = "Overview",
+                            SuperUsers = 0
+                        },
+                        new
+                        {
+                            SubscriptionPlanId = new Guid("22222222-2222-2222-2222-222222222222"),
+                            AdditionalSeatPrice = 100m,
+                            AdditionalSeatsAllowed = true,
+                            BaseUserSeats = 10,
+                            HasApi = false,
+                            IdealFor = "Startups or small teams that want to self-serve",
+                            KeyFeatures = "Basic Reports; Automated onboarding; Report upload",
+                            MaxHC = 200,
+                            Package = "Starter",
+                            PricePerMonth = 1000m,
+                            ReportingLevel = "Basic",
+                            SuperUsers = 1
+                        },
+                        new
+                        {
+                            SubscriptionPlanId = new Guid("33333333-3333-3333-3333-333333333333"),
+                            AdditionalSeatPrice = 90m,
+                            AdditionalSeatsAllowed = true,
+                            BaseUserSeats = 20,
+                            HasApi = false,
+                            IdealFor = "Growing SMEs needing more capacity",
+                            KeyFeatures = "Everything in Starter; Advanced reporting; Dedicated account manager; Optional addons",
+                            MaxHC = 400,
+                            Package = "Business",
+                            PricePerMonth = 2500m,
+                            ReportingLevel = "Advanced",
+                            SuperUsers = 2
+                        },
+                        new
+                        {
+                            SubscriptionPlanId = new Guid("44444444-4444-4444-4444-444444444444"),
+                            AdditionalSeatPrice = 0m,
+                            AdditionalSeatsAllowed = false,
+                            BaseUserSeats = 0,
+                            HasApi = false,
+                            IdealFor = "Large organisations with complex requirements",
+                            KeyFeatures = "4 Superusers; Premium support (Non-Tech); Custom contract and SLA; Dedicated account manager; Custom onboarding support; Unlimited seats; Unlimited HC",
+                            Package = "Enterprise",
+                            PricePerMonth = 3500m,
+                            ReportingLevel = "Advanced",
+                            SuperUsers = 4
+                        },
+                        new
+                        {
+                            SubscriptionPlanId = new Guid("55555555-5555-5555-5555-555555555555"),
+                            AdditionalSeatPrice = 0m,
+                            AdditionalSeatsAllowed = false,
+                            BaseUserSeats = 0,
+                            HasApi = true,
+                            IdealFor = "Large organisations with complex requirements",
+                            KeyFeatures = "6 Superusers; Premium support; Custom contract and SLA; Dedicated account manager; Premium Reports; Custom onboarding support; Unlimited seats; APIs",
+                            Package = "Enterprise Plus",
+                            ReportingLevel = "Premium",
+                            SuperUsers = 6
+                        });
+                });
+
             modelBuilder.Entity("VeiraMal.API.Models.SuperAdmin", b =>
                 {
                     b.Property<int>("Id")
@@ -407,6 +700,125 @@ namespace VeiraMal.API.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Terms", (string)null);
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.User", b =>
+                {
+                    b.Property<int>("UserId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("UserId"));
+
+                    b.Property<string>("AccessLevel")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("BusinessUnit")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("ContactNumber")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<int>("EmployeeNumber")
+                        .HasColumnType("int");
+
+                    b.Property<string>("FirstName")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsFirstLogin")
+                        .HasColumnType("bit");
+
+                    b.Property<bool>("IsPasswordResetRequired")
+                        .HasColumnType("bit");
+
+                    b.Property<string>("LastName")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Location")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("MiddleName")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PasswordHash")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<Guid>("UserGuid")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("Users", "dbo");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.Company", b =>
+                {
+                    b.HasOne("VeiraMal.API.Models.Company", "ParentCompany")
+                        .WithMany("ChildCompanies")
+                        .HasForeignKey("ParentCompanyId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("ParentCompany");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.CompanySubscription", b =>
+                {
+                    b.HasOne("VeiraMal.API.Models.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VeiraMal.API.Models.SubscriptionPlan", "SubscriptionPlan")
+                        .WithMany()
+                        .HasForeignKey("SubscriptionPlanId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("SubscriptionPlan");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.CompanySuperUserAssignment", b =>
+                {
+                    b.HasOne("VeiraMal.API.Models.Company", "Company")
+                        .WithMany("AssignedSuperUsers")
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VeiraMal.API.Models.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.Company", b =>
+                {
+                    b.Navigation("AssignedSuperUsers");
+
+                    b.Navigation("ChildCompanies");
                 });
 #pragma warning restore 612, 618
         }

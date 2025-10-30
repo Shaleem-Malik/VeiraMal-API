@@ -22,10 +22,15 @@ namespace VeiraMal.API.Services
             if (nhtList.Count == 0)
                 throw new InvalidDataException("No valid NHT data found in the file.");
 
+            // Remove old data before adding new
+            _context.NHTs.RemoveRange(_context.NHTs);
+            await _context.SaveChangesAsync();
+
+            // Add the new records
             await _context.NHTs.AddRangeAsync(nhtList);
             await _context.SaveChangesAsync();
 
-            return $"{nhtList.Count} NHT records successfully uploaded.";
+            return $"{nhtList.Count} NHT records successfully uploaded (old data replaced).";
         }
 
         public async Task<IEnumerable<NHT>> GetAllAsync()
@@ -71,6 +76,51 @@ namespace VeiraMal.API.Services
                 .OrderBy(r => r.Department)
                 .ToList();
         }
+
+        public async Task<IEnumerable<object>> GetFinanceAnalysisAsync(string month)
+        {
+            // Only Finance records for the given month
+            var financeNHTs = await _context.NHTs
+                .AsNoTracking()
+                .Where(n => n.OrganizationalKey == "Finance" && n.Month == month)
+                .ToListAsync();
+
+            if (!financeNHTs.Any())
+                return Enumerable.Empty<object>();
+
+            return financeNHTs
+                .GroupBy(n => n.OrganizationalUnit ?? "Unknown") // Group by Unit inside Finance
+                .Select(g =>
+                {
+                    var newHires = g.Where(x => x.ActionType != null &&
+                        (x.ActionType.Equals("New Hire", StringComparison.OrdinalIgnoreCase) ||
+                         x.ActionType.Equals("Hire Employee", StringComparison.OrdinalIgnoreCase)));
+
+                    var transfers = g.Where(x => x.ActionType != null &&
+                        (x.ActionType.Contains("Promotion", StringComparison.OrdinalIgnoreCase) ||
+                         x.ActionType.Equals("Lateral Move", StringComparison.OrdinalIgnoreCase)));
+
+                    int totalVacantRoles = newHires.Count() + transfers.Count();
+
+                    return new
+                    {
+                        OrganizationalUnit = g.Key,
+                        NewHireTotal = newHires.Count(),
+                        NewHireMale = newHires.Count(x => x.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) == true),
+                        NewHireFemale = newHires.Count(x => x.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) == true),
+                        TransferTotal = transfers.Count(),
+                        TransferMale = transfers.Count(x => x.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) == true),
+                        TransferFemale = transfers.Count(x => x.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) == true),
+                        InternalHireRate = totalVacantRoles > 0
+                            ? Math.Round((double)transfers.Count() / totalVacantRoles * 100, 2)
+                            : 0
+                    };
+                })
+                .OrderBy(r => r.OrganizationalUnit)
+                .ToList();
+        }
+
+
 
         private async Task<List<NHT>> ParseExcelAsync(IFormFile file)
         {
