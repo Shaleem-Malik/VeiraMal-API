@@ -39,39 +39,40 @@ namespace VeiraMal.API.Controllers
             if (user == null)
                 return Unauthorized(new { Message = "Invalid credentials" });
 
-            // Check if user is inactive
-            if (user.IsActive == false)
+            if (!user.IsActive)
                 return Unauthorized(new { Message = "Account is inactive. Please contact your administrator." });
 
             var ok = await _userService.VerifyPasswordAsync(user, dto.Password);
             if (!ok)
                 return Unauthorized(new { Message = "Invalid credentials" });
 
-            // parse business units from DB (comma separated), normalize and dedupe
             var businessUnits = ParseBusinessUnits(user.BusinessUnit);
 
-            // BEFORE generating token: set IsFirstLogin = false (user has successfully logged in)
-            // We persist this change to DB immediately.
-            if (user.IsFirstLogin)
+            // Capture original flag BEFORE changing it
+            var wasFirstLogin = user.IsFirstLogin;
+
+            if (wasFirstLogin)
             {
                 user.IsFirstLogin = false;
                 _db.Users.Update(user);
                 await _db.SaveChangesAsync();
             }
 
-            var token = GenerateJwtToken(user, includeMustReset: user.IsPasswordResetRequired, businessUnits: businessUnits);
+            // pass original wasFirstLogin into token generation (see below)
+            var token = GenerateJwtToken(user, includeMustReset: user.IsPasswordResetRequired, businessUnits: businessUnits, isFirstLogin: wasFirstLogin);
 
             var resp = new AuthResponseDto
             {
                 Token = token,
                 MustResetPassword = user.IsPasswordResetRequired,
-                IsFirstLogin = user.IsFirstLogin, // now false after we set it
+                IsFirstLogin = wasFirstLogin, // now correctly reports whether this *was* first login
                 Message = user.IsPasswordResetRequired ? "Password reset required" : "Login successful",
                 BusinessUnits = businessUnits
             };
 
             return Ok(resp);
         }
+
 
 
 
@@ -89,14 +90,39 @@ namespace VeiraMal.API.Controllers
             // set new password
             await _userService.SetPasswordHashAsync(user, dto.NewPassword);
             user.IsPasswordResetRequired = false;
+
+            // This makes the next successful login behave like a first-login (client receives IsFirstLogin true).
+            user.IsFirstLogin = true;
+
             await _db.SaveChangesAsync();
 
             // send welcome email
             var subject = $"Welcome to {(await _db.Companies.FindAsync(user.CompanyId))?.CompanyName ?? "our app"}";
             var signinUrl = $"{Request.Scheme}://{Request.Host.Value}/signin";
-            var body = $@"<p>Hi {user.FirstName},</p>
-                         <p>Your password has been updated successfully. You can sign in here: <a href='{signinUrl}'>Sign in</a></p>
-                         <p>Welcome aboard!</p>";
+            var body = $@"
+                <!doctype html>
+                <html>
+                  <body style=""margin:0;padding:0;background-color:#f4f6f8;font-family: Arial, sans-serif;"">
+                    <table width=""100%"" cellspacing=""0"" cellpadding=""0"" style=""background-color:#f4f6f8;padding:20px 0;"">
+                      <tr>
+                        <td align=""center"">
+                          <table width=""600"" cellspacing=""0"" cellpadding=""0"" style=""background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,0.06);"">
+                            <tr>
+                              <td style=""padding:32px;"">
+                                <p style=""margin:0 0 16px 0;color:#333;font-size:16px;"">Hi {user.FirstName},</p>
+                                <p style=""margin:0 0 20px 0;color:#666;font-size:14px;line-height:1.5;"">
+                                  Your password has been updated successfully. You can sign in here: 
+                                  <a href='{signinUrl}' style=""color:#0f6efd;text-decoration:none;font-weight:600;"">Sign in</a>
+                                </p>
+                                <p style=""margin:0;color:#666;font-size:14px;"">Welcome aboard!</p>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                  </body>
+                </html>";
             await _emailService.SendEmailAsync(user.Email, subject, body);
 
             return Ok(new { Message = "Password updated and welcome email sent." });
@@ -152,10 +178,68 @@ namespace VeiraMal.API.Controllers
             return Ok(new { Message = "Logged out successfully." });
         }
 
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordDto dto)
+        {
+            if (dto == null || string.IsNullOrWhiteSpace(dto.Email))
+                return BadRequest(new { Message = "Email is required." });
+
+            // find user by email (case-insensitive lookup should be inside GetByEmailAsync, but ensure)
+            var user = await _userService.GetByEmailAsync(dto.Email.Trim());
+            if (user == null)
+            {
+                // Option A: return NotFound so UI can say 'email not registered'
+                // return NotFound(new { Message = "Email not registered." });
+
+                // Option B (more secure): don't reveal whether the email is registered:
+                // return Ok(new { Message = "If an account exists for that email, a reset link has been sent." });
+                return NotFound(new { Message = "Email not registered." });
+            }
+
+            if (!user.IsActive)
+            {
+                return BadRequest(new { Message = "Account is inactive. Please contact your administrator." });
+            }
+
+            // generate and set temporary password
+            var tempPassword = await _userService.GenerateTemporaryPasswordAsync();
+            await _userService.SetPasswordHashAsync(user, tempPassword);
+
+            // mark that they must reset password on next login
+            user.IsPasswordResetRequired = true;
+
+            // NOTE: we intentionally do NOT change IsFirstLogin here — forgot-password is separate from initial onboarding.
+
+            await _db.SaveChangesAsync();
+
+            // send temporary password email
+            var subject = "Password reset - temporary password";
+            var signinUrl = $"{Request.Scheme}://{Request.Host.Value}/signin";
+            var body = $@"
+                <div style='font-family: Arial, sans-serif; max-width:600px;margin:0 auto;'>
+                  <div style='padding:24px;background:#ffffff;border-radius:8px;'>
+                    <p>Hi {user.FirstName},</p>
+                    <p>We received a request to reset your password. Use the temporary password below to sign in, then you will be prompted to set a new password.</p>
+                    <div style='background:#f4f6f8;padding:12px;border-radius:6px;margin:16px 0;'>
+                      <p style='margin:0;'><strong>Temporary password:</strong></p>
+                      <p style='margin:8px 0 0 0;font-family:monospace;word-break:break-all;'>{tempPassword}</p>
+                    </div>
+                    <p style='margin-top:12px;'>Sign in here: <a href='{signinUrl}' style='color:#0f6efd'>{signinUrl}</a></p>
+                    <p style='font-size:12px;color:#666;margin-top:12px;'>If you did not request this password reset, please contact your administrator immediately.</p>
+                    <p style='margin-top:16px;'>Regards,<br/>HR Analytix Team</p>
+                  </div>
+                </div>";
+
+            await _emailService.SendEmailAsync(user.Email, subject, body);
+
+            return Ok(new { Message = "Temporary password has been sent to the registered email address." });
+        }
+
+
 
         // Add `using System.Collections.Generic;` and `using System.Linq;` at top of file if not present.
 
-        private string GenerateJwtToken(User user, bool includeMustReset, List<string>? businessUnits = null)
+        private string GenerateJwtToken(User user, bool includeMustReset, List<string>? businessUnits = null, bool isFirstLogin = false)
         {
             var key = _cfg["Jwt:Key"];
             var issuer = _cfg["Jwt:Issuer"];
@@ -170,13 +254,13 @@ namespace VeiraMal.API.Controllers
             // base claims
             var claims = new List<Claim>
             {
-            new Claim("userId", user.UserId.ToString()),
-            new Claim(ClaimTypes.Email, user.Email),
-            new Claim("companyId", user.CompanyId.ToString()),
-            new Claim("access", user.AccessLevel),
-            new Claim("isFirstLogin", user.IsFirstLogin ? "true" : "false"), // <-- include flag
-            new Claim(JwtRegisteredClaimNames.Jti, jti)
-
+                new Claim("userId", user.UserId.ToString()),
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim("companyId", user.CompanyId.ToString()),
+                new Claim("firstName", user.FirstName),
+                new Claim("access", user.AccessLevel),
+                new Claim("isFirstLogin", isFirstLogin ? "true" : "false"), // use captured value
+                new Claim(JwtRegisteredClaimNames.Jti, jti)
             };
 
             // include business units (both a single comma-separated claim and multiple claims)

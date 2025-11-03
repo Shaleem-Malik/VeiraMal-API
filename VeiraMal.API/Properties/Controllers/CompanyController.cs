@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.Threading.Tasks;
 using VeiraMal.API.DTOs;
+using VeiraMal.API.Services;
 using VeiraMal.API.Services.Interfaces;
 
 namespace VeiraMal.API.Properties.Controllers
@@ -14,47 +15,77 @@ namespace VeiraMal.API.Properties.Controllers
     public class CompanyController : ControllerBase
     {
         private readonly ICompanyService _companyService;
+        private readonly IStripeService _stripeService;
         private readonly ILogger<CompanyController> _logger;
         private readonly ISubCompanyResolver _subCompanyResolver;
         private readonly AppDbContext _db;
+        private readonly IConfiguration _cfg;
 
         public CompanyController(
             ICompanyService companyService,
             ISubCompanyResolver subCompanyResolver,
             AppDbContext db,
-            ILogger<CompanyController> logger)
+            ILogger<CompanyController> logger,
+             IConfiguration cfg,
+             IStripeService stripeService)
         {
             _companyService = companyService;
+            _stripeService = stripeService;
             _subCompanyResolver = subCompanyResolver;
             _db = db;
             _logger = logger;
+            _cfg = cfg;
         }
 
         [HttpPost("onboard")]
-        public async Task<IActionResult> Onboard([FromBody] CompanyOnboardDto dto)
+        public async Task<IActionResult> Onboard([FromBody] CompanyOnboardRequestDto request)
         {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
+            // request contains dto + links for success/cancel/signin
+            if (request == null || request.Dto == null)
+                return BadRequest("Invalid request.");
 
-            var signinBase = Request.Headers.ContainsKey("Origin")
-                ? Request.Headers["Origin"].ToString() + "/signin"
-                : $"{Request.Scheme}://{Request.Host.Value}/signin";
+            // Create company & user, but do not send email yet
+            var res = await _companyService.OnboardCompanyAsync(request.Dto, request.SignInUrl, sendEmail: false);
 
+            // Create Stripe session for the computed amount
+            var session = await _stripeService.CreateCheckoutSessionAsync(
+                res.CompanyId,
+                res.UserId,
+                res.CompanySubscriptionId,
+                res.AmountInCents,
+                request.SuccessUrl,
+                request.CancelUrl,
+                request.Currency ?? "aud"
+            );
+
+            return Ok(new
+            {
+                sessionId = session.Id,
+                url = session.Url
+            });
+        }
+        [HttpPost("resend-onboarding")]
+        public async Task<IActionResult> ResendOnboarding([FromBody] ResendOnboardRequest req)
+        {
+            if (req == null) return BadRequest("Invalid request.");
             try
             {
-                var companyId = await _companyService.OnboardCompanyAsync(dto, signinBase);
-                return Ok(new { CompanyId = companyId, Message = "Company onboarded and superuser invited." });
-            }
-            catch (ArgumentException aex)
-            {
-                // validation error (e.g., ABN)
-                return BadRequest(new { Message = aex.Message });
+                var signinUrl = _cfg.GetValue<string>("App:SigninUrl") ?? "http://localhost:3000/signin";
+                await _companyService.FinalizeOnboardPaymentAsync(req.CompanyId, req.UserId, req.CompanySubscriptionId, signinUrl);
+                return Ok(new { message = "Onboarding email sent (if protected temp password existed)." });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error while onboarding company");
-                return StatusCode(500, new { Message = "An unexpected error occurred during onboarding." });
+                _logger.LogError(ex, "ResendOnboarding failed for CompanyId={CompanyId}", req?.CompanyId);
+                return StatusCode(500, new { message = "Failed to resend onboarding email.", details = ex.Message });
             }
+        }
+
+        public class ResendOnboardRequest
+        {
+            public Guid CompanyId { get; set; }
+            public int UserId { get; set; }
+            public Guid CompanySubscriptionId { get; set; }
         }
 
         // ----- NEW: Get company details

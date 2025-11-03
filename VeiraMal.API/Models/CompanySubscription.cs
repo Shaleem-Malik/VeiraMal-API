@@ -23,5 +23,12 @@ namespace VeiraMal.API.Models
 
         public DateTime StartDate { get; set; } = DateTime.UtcNow;
         public DateTime? EndDate { get; set; } // if trial or end-of-subscription
+
+        // NEW: temporarily store protected (encrypted) temporary password until payment completes
+        // This should be protected using IDataProtector (not stored in plaintext).
+        public string? TempPasswordProtected { get; set; }
+
+        // NEW: mark subscription payment status so we don't re-process
+        public bool IsPaid { get; set; } = false;
     }
 }

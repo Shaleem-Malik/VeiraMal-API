@@ -76,14 +76,30 @@ namespace VeiraMal.API.Services
 
         private string BuildNewUserEmail(User user, string tempPassword)
         {
-            // Simple HTML template — adjust to your front end
             return $@"
-                <p>Hi {user.FirstName},</p>
-                <p>An account has been created for you at <strong>{user.CompanyId}</strong>.</p>
-                <p><strong>Email:</strong> {user.Email}</p>
-                <p><strong>Temporary password:</strong> {tempPassword}</p>
-                <p>Please log in and <strong>reset your password</strong> when prompted.</p>
-                <p>Regards,<br/>Your Team</p>";
+        <div style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; line-height: 1.6;'>
+            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; color: white;'>
+                <h1 style='margin: 0; font-size: 24px;'>Welcome {user.FirstName}</h1>
+            </div>
+            
+            <div style='padding: 30px; background: #f9f9f9;'>
+                <p style='margin-bottom: 20px;'>Hi <strong>{user.FirstName}</strong>,</p>
+                <p style='margin-bottom: 20px;'>An account has been created for you at <strong>{user.CompanyId}</strong>.</p>
+                
+                <div style='background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea; margin: 20px 0;'>
+                    <p style='margin: 10px 0;'><strong>Email:</strong> {user.Email}</p>
+                    <p style='margin: 10px 0;'><strong>Temporary password:</strong> 
+                        <code style='background: #f0f0f0; padding: 4px 8px; border-radius: 4px; font-family: monospace;'>{tempPassword}</code>
+                    </p>
+                </div>
+                
+                <div style='background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 15px; margin: 20px 0;'>
+                    <p style='margin: 0; color: #856404;'>⚠️ <strong>Important:</strong> Please log in and reset your password when prompted.</p>
+                </div>
+                
+                <p style='margin-top: 30px;'>Regards,<br/><strong>HR Analytix Team</strong></p>
+            </div>
+        </div>";
         }
 
         public async Task<BulkUploadResultDto> CreateUsersFromExcelAsync(Guid companyId, Stream excelStream, string uploaderEmail)

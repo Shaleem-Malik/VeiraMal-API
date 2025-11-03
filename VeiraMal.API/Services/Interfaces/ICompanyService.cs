@@ -13,7 +13,7 @@ namespace VeiraMal.API.Services.Interfaces
         /// <summary>
         /// Onboards a company and creates its primary superuser.
         /// </summary>
-        Task<Guid> OnboardCompanyAsync(CompanyOnboardDto dto, string signinLinkBase);
+        Task<OnboardResultDto> OnboardCompanyAsync(CompanyOnboardDto dto, string signinLinkBase, bool sendEmail = true);
 
         /// <summary>
         /// Fetch company details for viewing.
@@ -32,6 +32,7 @@ namespace VeiraMal.API.Services.Interfaces
         /// Creates a subcompany under a given parent company.
         /// </summary>
         Task<SubCompanyDto> CreateSubCompanyAsync(Guid parentCompanyId, CreateSubCompanyDto dto);
+        Task FinalizeOnboardPaymentAsync(Guid companyId, int userId, Guid companySubscriptionId, string signinLinkBase);
 
         /// <summary>
         /// Lists all subcompanies for a given parent company.

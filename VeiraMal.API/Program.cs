@@ -1,14 +1,15 @@
-using OfficeOpenXml;
-using VeiraMal.API;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using System.Text;
-using VeiraMal.API.Services.Interfaces;
-using VeiraMal.API.Services;
-using VeiraMal.API.Models;
+using OfficeOpenXml;
+using Stripe;
 using System.IdentityModel.Tokens.Jwt;
+using System.Text;
+using VeiraMal.API;
+using VeiraMal.API.Models;
+using VeiraMal.API.Services;
+using VeiraMal.API.Services.Interfaces;
 
 ExcelPackage.License.SetNonCommercialPersonal("Your Name");
 
@@ -43,10 +44,17 @@ builder.Services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<IEmailService, EmailService>();
 builder.Services.AddScoped<IUserService, UserService>();
 builder.Services.AddScoped<ICompanyService, CompanyService>();
-builder.Services.AddScoped<ISubscriptionService, SubscriptionService>();
+builder.Services.AddScoped<CompanyService>();
+builder.Services.AddScoped<ISubscriptionService, VeiraMal.API.Services.SubscriptionService>();
 builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<ISubCompanyResolver, SubCompanyResolver>();
 builder.Services.AddScoped<ITokenBlacklistService, TokenBlacklistService>();
+
+builder.Services.AddDataProtection();
+builder.Services.AddScoped<IStripeService, StripeService>();
+
+StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
+builder.Services.AddControllers();
 
 // --------------------- JWT Configuration ---------------------
 var jwtSettings = builder.Configuration.GetSection("Jwt");

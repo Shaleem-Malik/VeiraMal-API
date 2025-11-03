@@ -1,6 +1,7 @@
-﻿using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -17,6 +18,7 @@ namespace VeiraMal.API.Services
         private readonly IEmailService _emailService;
         private readonly IConfiguration _cfg;
         private readonly ILogger<CompanyService> _logger;
+        private readonly IDataProtector _protector;
 
         // ABN must be exactly 11 digits (only digits)
         private static readonly Regex AbnRegex = new Regex(@"^\d{11}$", RegexOptions.Compiled);
@@ -27,20 +29,26 @@ namespace VeiraMal.API.Services
             IUserService userService,
             IEmailService emailService,
             IConfiguration cfg,
-            ILogger<CompanyService> logger)
+            ILogger<CompanyService> logger,
+            IDataProtectionProvider dp)
         {
             _db = db;
             _userService = userService;
             _emailService = emailService;
             _cfg = cfg;
             _logger = logger;
+            _protector = dp.CreateProtector("VeiraMal.TempPasswordProtector.v1");
         }
 
         /// <summary>
         /// Onboards a company and creates the superuser; returns CompanyId (Guid).
         /// Validates ABN is exactly 11 digits; throws ArgumentException if invalid.
         /// </summary>
-        public async Task<Guid> OnboardCompanyAsync(CompanyOnboardDto dto, string signinLinkBase)
+        /// <summary>
+        /// Onboards a company and creates the superuser; returns onboarding result (ids).
+        /// If sendEmail==false the temp password is not emailed — it is protected and stored in CompanySubscription.TempPasswordProtected.
+        /// </summary>
+        public async Task<OnboardResultDto> OnboardCompanyAsync(CompanyOnboardDto dto, string signinLinkBase, bool sendEmail = true)
         {
             // Validate required fields (basic)
             if (string.IsNullOrWhiteSpace(dto.SuperUserEmail))
@@ -121,14 +129,11 @@ namespace VeiraMal.API.Services
                 AdditionalSeatsPurchased = dto.AdditionalSeatsRequested,
                 AdditionalSeatPriceSnapshot = additionalPrice,
                 MonthlyPriceSnapshot = monthlyPrice,
-                StartDate = DateTime.UtcNow
+                StartDate = DateTime.UtcNow,
+                IsPaid = false
             };
 
-            await _db.CompanySubscriptions.AddAsync(companySubscription);
-
-            // Create superuser and populate new fields:
-            // If SuperUserContactNumber is empty, default to company.ContactNumber.
-            // If SuperUserLocation is empty, default to company.Location.
+            // Create superuser and populate new fields (not email-sent yet if sendEmail==false)
             var user = new User
             {
                 CompanyId = company.CompanyId,
@@ -151,19 +156,190 @@ namespace VeiraMal.API.Services
 
             await _db.Users.AddAsync(user);
 
+            // Protect temp password and store on subscription until payment succeeds (if we're postponing email)
+            var protectedTemp = _protector.Protect(tempPassword);
+            companySubscription.TempPasswordProtected = protectedTemp;
+
+            await _db.CompanySubscriptions.AddAsync(companySubscription);
+
             await _db.SaveChangesAsync();
 
-            // Prepare email content (unchanged)
-            var signInUrl = signinLinkBase;
-            var subject = $"Welcome to {company.CompanyName} — Account Created";
+            // If caller requested immediate email, send it now (legacy behavior). Otherwise postpone until webhook confirmation.
+            if (sendEmail)
+            {
+                await SendOnboardingEmailAsync(user, company, companySubscription, tempPassword, signinLinkBase);
+                // clear protected temp if you want (optional)
+                companySubscription.TempPasswordProtected = null;
+                await _db.SaveChangesAsync();
+            }
+
+            return new OnboardResultDto
+            {
+                CompanyId = company.CompanyId,
+                UserId = user.UserId,
+                CompanySubscriptionId = companySubscription.CompanySubscriptionId,
+                AmountInCents = (int)(companySubscription.MonthlyPriceSnapshot * 100) // for frontend convenience
+            };
+        }
+
+        /// <summary>
+        /// Unprotect temp password, send the email, and mark subscription as paid.
+        /// This is intended to be called by the payment webhook AFTER Stripe confirms payment.
+        /// </summary>
+        public async Task FinalizeOnboardPaymentAsync(Guid companyId, int userId, Guid companySubscriptionId, string signinLinkBase)
+        {
+            var companySubscription = await _db.CompanySubscriptions
+                .FirstOrDefaultAsync(cs => cs.CompanySubscriptionId == companySubscriptionId && cs.CompanyId == companyId);
+
+            if (companySubscription == null)
+                throw new ArgumentException("Company subscription not found.");
+
+            if (companySubscription.IsPaid)
+            {
+                _logger.LogInformation("CompanySubscription {Id} already marked as paid; skipping.", companySubscriptionId);
+                return; // idempotent
+            }
+
+            var user = await _db.Users.FirstOrDefaultAsync(u => u.UserId == userId && u.CompanyId == companyId);
+            if (user == null)
+                throw new ArgumentException("User not found for this company.");
+
+            var company = await _db.Companies.FirstOrDefaultAsync(c => c.CompanyId == companyId);
+            if (company == null)
+                throw new ArgumentException("Company not found.");
+
+            if (string.IsNullOrWhiteSpace(companySubscription.TempPasswordProtected))
+            {
+                _logger.LogError("No protected temp password found for CompanySubscription {Id}", companySubscriptionId);
+                throw new InvalidOperationException("Missing protected temp password.");
+            }
+
+            // Unprotect to get temp password
+            string tempPassword;
+            try
+            {
+                tempPassword = _protector.Unprotect(companySubscription.TempPasswordProtected);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to unprotect temp password for CompanySubscription {Id}", companySubscriptionId);
+                throw;
+            }
+
+            // Send the onboarding email
+            await SendOnboardingEmailAsync(user, company, companySubscription, tempPassword, signinLinkBase);
+
+            // Mark paid and clear protected password
+            companySubscription.IsPaid = true;
+            companySubscription.TempPasswordProtected = null;
+            await _db.SaveChangesAsync();
+        }
+
+        private async Task SendOnboardingEmailAsync(User user, Company company, CompanySubscription companySubscription, string tempPassword, string signinLinkBase)
+        {
+            var signInUrl = signinLinkBase; // passed in from controller
+            var encodedSignInUrl = System.Net.WebUtility.HtmlEncode(signInUrl);
+            var encodedFirstName = System.Net.WebUtility.HtmlEncode(user.FirstName);
+            var encodedTempPassword = System.Net.WebUtility.HtmlEncode(tempPassword);
+            var companyNameEncoded = System.Net.WebUtility.HtmlEncode(company.CompanyName);
+
+            var logoUrl = _cfg.GetValue<string>("SendGrid:LogoUrl"); // optional, set in appsettings
+            var encodedLogoUrl = string.IsNullOrWhiteSpace(logoUrl) ? "" : System.Net.WebUtility.HtmlEncode(logoUrl);
+
+            var subject = $"Welcome to {companyNameEncoded} — Account Created";
+
             var body = $@"
-            <p>Hello {user.FirstName},</p>
-            <p>Your account has been created. Use the temporary password below to sign in and you will be prompted to set a new password:</p>
-            <p><b>Temporary password:</b> {System.Net.WebUtility.HtmlEncode(tempPassword)}</p>
-            <p><a href='{signInUrl}'>Sign in</a></p>
-            <p>This temporary password will expire after 48 hours. If you did not request this, contact support.</p>
-            <p>Thanks,<br/>Your App Team</p>
-            ";
+                <!doctype html>
+                <html lang=""en"">
+                  <head>
+                    <meta charset=""utf-8"">
+                    <meta name=""viewport"" content=""width=device-width, initial-scale=1.0""/>
+                    <title>Welcome to {companyNameEncoded}</title>
+                  </head>
+                  <body style=""margin:0;padding:0;background-color:#f4f6f8;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;"">
+                    <table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""background-color:#f4f6f8;padding:20px 0;"">
+                      <tr>
+                        <td align=""center"">
+                          <table role=""presentation"" width=""600"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,0.06);"">
+                            <tr>
+                              <td style=""padding:24px 28px;border-bottom:1px solid #eef2f5;background:linear-gradient(90deg,#0f6efd,#0b70d0);"">
+                                <table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"">
+                                  <tr>
+                                    <td style=""vertical-align:middle;"">
+                                      {(string.IsNullOrWhiteSpace(encodedLogoUrl)
+                                          ? $"<span style=\"\";color:#ffffff;font-weight:700;font-size:18px;\">{companyNameEncoded}</span>"
+                                          : $"<img src=\"{encodedLogoUrl}\" alt=\"{companyNameEncoded} logo\" width=\"160\" style=\"display:block;border:0;max-width:160px;height:auto;\" />")}
+                                    </td>
+                                    <td align=""right"" style=""vertical-align:middle;color:#ffffff;font-size:14px;"">
+                                      <span style=""opacity:0.95;font-weight:600;"">Welcome aboard</span>
+                                    </td>
+                                  </tr>
+                                </table>
+                              </td>
+                            </tr>
+
+                            <tr>
+                              <td style=""padding:28px 32px;color:#334155;"">
+                                <h1 style=""margin:0 0 12px 0;font-size:20px;font-weight:700;color:#0f172a;"">Hello {encodedFirstName},</h1>
+                                <p style=""margin:0 0 18px 0;color:#475569;line-height:1.6;font-size:15px;"">
+                                  Your account for <strong>{companyNameEncoded}</strong> has been created successfully. Use the temporary password below to sign in — you'll be prompted to set a new password on first login.
+                                </p>
+
+                                <div style=""margin:16px 0 22px 0;padding:14px;border-radius:6px;background:#f8fafc;border:1px solid #e6eef8;font-family: 'Courier New', Courier, monospace;color:#0f172a;font-size:16px;display:inline-block;"">
+                                  Temporary password: <strong style=""margin-left:8px;"">{encodedTempPassword}</strong>
+                                </div>
+
+                                <div style=""margin:22px 0;text-align:left;"">
+                                  <a href=""{encodedSignInUrl}"" target=""_blank"" rel=""noopener noreferrer"" style=""display:inline-block;padding:12px 20px;border-radius:6px;background:#0f6efd;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;"">
+                                    Sign in to your account
+                                  </a>
+                                </div>
+
+                                <p style=""margin:12px 0 8px 0;color:#64748b;font-size:13px;line-height:1.5;"">
+                                  If the button doesn't work, copy and paste the link below into your browser:
+                                </p>
+
+                                <p style=""word-break:break-all;font-size:13px;color:#0f172a;margin:0 0 18px 0;"">
+                                  <a href=""{encodedSignInUrl}"" target=""_blank"" rel=""noopener noreferrer"" style=""color:#0b69ff;text-decoration:underline;"">{encodedSignInUrl}</a>
+                                </p>
+
+                                <p style=""margin:0;color:#64748b;font-size:13px;line-height:1.5;"">
+                                  This temporary password will expire in <strong>48 hours</strong>. If you did not request this account, please contact our support team immediately.
+                                </p>
+                              </td>
+                            </tr>
+
+                            <tr>
+                              <td style=""padding:0 32px 18px 32px;"">
+                                <hr style=""border:none;height:1px;background:#eef2f8;margin:0;"" />
+                              </td>
+                            </tr>
+
+                            <tr>
+                              <td style=""padding:14px 32px 28px 32px;font-size:13px;color:#94a3b8;"">
+                                <p style=""margin:0 0 8px 0;"">
+                                  Need help? Email us at <a href=""mailto:support@veiramal.com"" style=""color:#0b69ff;text-decoration:underline;"">support@veiramal.com</a>.
+                                </p>
+
+                                <p style=""margin:6px 0 0 0;font-size:12px;color:#94a3b8;"">
+                                  VeiraMal — {companyNameEncoded}<br/>
+                                  123 Business Address, Floor 2, Sector X<br/>
+                                  xyz, Australia
+                                </p>
+
+                                <p style=""margin:12px 0 0 0;font-size:12px;color:#94a3b8;"">
+                                  You received this email because an account was created for you. If you don’t want these emails, <a href=""#"" style=""color:#0b69ff;text-decoration:underline;"">unsubscribe</a>.
+                                </p>
+                              </td>
+                            </tr>
+
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
+                  </body>
+                </html>
+                ";
 
             try
             {
@@ -173,11 +349,7 @@ namespace VeiraMal.API.Services
             {
                 _logger.LogError(ex, "Failed to send onboarding email to {Email} for CompanyId={CompanyId}", user.Email, company.CompanyId);
             }
-
-            return company.CompanyId;
         }
-
-
 
         /// <summary>
         /// Returns company details or null if not found.
