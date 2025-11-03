@@ -1,19 +1,19 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 
-name: Build and deploy ASP.Net Core app to Azure Web App - veiramal-api
+name: Build and deploy ASP.Net Core app to Azure Web App - veiramalprod-api
 
 on:
   push:
     branches:
-      - Dev
+      - main
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
     permissions:
-      contents: read
+      contents: read #This is required for actions/checkout
 
     steps:
       - uses: actions/checkout@v4
@@ -29,20 +29,20 @@ jobs:
 
       - name: dotnet publish
         run: dotnet publish -c Release -o "./publish-output"
-        working-directory: ./VeiraMal.API  # ← ADD THIS LINE
+        working-directory: ./VeiraMal.API
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
         with:
           name: .net-app
-          path: ./VeiraMal.API/publish-output  # ← UPDATE THIS PATH
+          path: ./VeiraMal.API/publish-output
 
   deploy:
     runs-on: windows-latest
     needs: build
     permissions:
-      id-token: write
-      contents: read
+      id-token: write #This is required for requesting the JWT
+      contents: read #This is required for actions/checkout
 
     steps:
       - name: Download artifact from build job
@@ -53,14 +53,16 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_962C1431A9B849ED8D6E572D028B5366 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_343456BED29148688EAE7B03BD64832A }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_31E0C7CCA7464167BA4871CFEEA0C52B }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_65590E8666B64CD3B8D8CE841F28AC17 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_C7EB31CA118C400E84F2755520CD03BC }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_CFAD8BB05AC74EBCBB6898BBF2CE7A57 }}
 
       - name: Deploy to Azure Web App
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'veiramal-api'
+          app-name: 'veiramalprod-api'
           slot-name: 'Production'
-          package: .  # This should point to the downloaded artifact
+          package: .
+
+          
