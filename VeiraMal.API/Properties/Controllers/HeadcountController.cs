@@ -42,5 +42,29 @@ namespace VeiraMal.API.Controllers
             var result = await _headcountService.GetFinanceAnalysisAsync(month, organizationalKey);
             return Ok(result);
         }
+
+        [HttpGet("analysis/export")]
+        public async Task<IActionResult> ExportAnalysis()
+        {
+            var bytes = await _headcountService.ExportAnalysisAsync();
+            if (bytes == null || bytes.Length == 0)
+                return NoContent();
+
+            var fileName = $"Headcount_Analysis_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx";
+            return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+
+        [HttpGet("finance-analysis/export")]
+        public async Task<IActionResult> ExportFinanceAnalysis([FromQuery] string month = "April", [FromQuery] string organizationalKey = "Finance")
+        {
+            var bytes = await _headcountService.ExportFinanceAnalysisAsync(month, organizationalKey);
+            if (bytes == null || bytes.Length == 0)
+                return NoContent();
+
+            var safeOrg = string.IsNullOrWhiteSpace(organizationalKey) ? "Finance" : organizationalKey;
+            var fileName = $"Headcount_{safeOrg}_Analysis_{month}_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx";
+            return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+
     }
 }

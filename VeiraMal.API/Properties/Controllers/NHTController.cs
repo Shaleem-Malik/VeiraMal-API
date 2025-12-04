@@ -50,5 +50,31 @@ namespace VeiraMal.API.Controllers
             var result = await _nhtService.GetFinanceAnalysisAsync(month);
             return Ok(result);
         }
+
+        [HttpGet("analysis/export")]
+        public async Task<IActionResult> ExportAnalysis()
+        {
+            var bytes = await _nhtService.ExportAnalysisAsync();
+            if (bytes == null || bytes.Length == 0)
+                return NoContent();
+
+            var fileName = $"NHT_Analysis_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx";
+            return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+
+        [HttpGet("finance-analysis/export")]
+        public async Task<IActionResult> ExportFinanceAnalysis([FromQuery] string month)
+        {
+            if (string.IsNullOrWhiteSpace(month))
+                return BadRequest("Month is required as query parameter (e.g. ?month=2025-11).");
+
+            var bytes = await _nhtService.ExportFinanceAnalysisAsync(month);
+            if (bytes == null || bytes.Length == 0)
+                return NoContent();
+
+            var fileName = $"NHT_Finance_Analysis_{month}_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx";
+            return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+
     }
 }

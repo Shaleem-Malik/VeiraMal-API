@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using OfficeOpenXml;
 using VeiraMal.API.Models;
 using VeiraMal.API.Services.Interfaces;
+using OfficeOpenXml.Style;
 
 namespace VeiraMal.API.Services
 {
@@ -177,6 +178,179 @@ namespace VeiraMal.API.Services
             }
 
             return nhtList;
+        }
+
+        public async Task<byte[]> ExportAnalysisAsync()
+        {
+            var all = await _context.NHTs.AsNoTracking().ToListAsync();
+            if (!all.Any())
+                return Array.Empty<byte>();
+
+            var rows = all
+                .GroupBy(n => n.OrganizationalKey ?? "Unknown")
+                .Select(g =>
+                {
+                    var newHires = g.Where(x => x.ActionType != null &&
+                        (x.ActionType.Equals("New Hire", StringComparison.OrdinalIgnoreCase) ||
+                         x.ActionType.Equals("Hire Employee", StringComparison.OrdinalIgnoreCase)));
+
+                    var transfers = g.Where(x => x.ActionType != null &&
+                        (x.ActionType.Contains("Promotion", StringComparison.OrdinalIgnoreCase) ||
+                         x.ActionType.Equals("Lateral Move", StringComparison.OrdinalIgnoreCase)));
+
+                    int totalVacantRoles = newHires.Count() + transfers.Count();
+
+                    return new
+                    {
+                        Department = g.Key,
+                        NewHireTotal = newHires.Count(),
+                        NewHireMale = newHires.Count(x => x.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) == true),
+                        NewHireFemale = newHires.Count(x => x.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) == true),
+                        TransferTotal = transfers.Count(),
+                        TransferMale = transfers.Count(x => x.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) == true),
+                        TransferFemale = transfers.Count(x => x.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) == true),
+                        InternalHireRate = totalVacantRoles > 0
+                            ? Math.Round((double)transfers.Count() / totalVacantRoles * 100, 2)
+                            : 0.0
+                    };
+                })
+                .OrderBy(r => r.Department)
+                .ToList();
+
+            // EPPlus license context - set appropriately for your environment.
+            //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+            using (var package = new ExcelPackage())
+            {
+                var ws = package.Workbook.Worksheets.Add("NHT Analysis");
+
+                // Headers
+                var headers = new[]
+                {
+                "Department",
+                "NewHireTotal",
+                "NewHireMale",
+                "NewHireFemale",
+                "TransferTotal",
+                "TransferMale",
+                "TransferFemale",
+                "InternalHireRate (%)"
+            };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    ws.Cells[1, i + 1].Value = headers[i];
+                    ws.Cells[1, i + 1].Style.Font.Bold = true;
+                }
+
+                // Rows
+                int row = 2;
+                foreach (var r in rows)
+                {
+                    ws.Cells[row, 1].Value = r.Department;
+                    ws.Cells[row, 2].Value = r.NewHireTotal;
+                    ws.Cells[row, 3].Value = r.NewHireMale;
+                    ws.Cells[row, 4].Value = r.NewHireFemale;
+                    ws.Cells[row, 5].Value = r.TransferTotal;
+                    ws.Cells[row, 6].Value = r.TransferMale;
+                    ws.Cells[row, 7].Value = r.TransferFemale;
+                    ws.Cells[row, 8].Value = r.InternalHireRate;
+                    ws.Cells[row, 8].Style.Numberformat.Format = "0.00";
+                    row++;
+                }
+
+                // Auto-fit columns
+                ws.Cells[1, 1, row - 1, headers.Length].AutoFitColumns();
+
+                return package.GetAsByteArray();
+            }
+        }
+
+        // Export Finance unit-level analysis (for a given month)
+        public async Task<byte[]> ExportFinanceAnalysisAsync(string month)
+        {
+            var financeNHTs = await _context.NHTs
+                .AsNoTracking()
+                .Where(n => n.OrganizationalKey == "Finance" && n.Month == month)
+                .ToListAsync();
+
+            if (!financeNHTs.Any())
+                return Array.Empty<byte>();
+
+            var rows = financeNHTs
+                .GroupBy(n => n.OrganizationalUnit ?? "Unknown")
+                .Select(g =>
+                {
+                    var newHires = g.Where(x => x.ActionType != null &&
+                        (x.ActionType.Equals("New Hire", StringComparison.OrdinalIgnoreCase) ||
+                         x.ActionType.Equals("Hire Employee", StringComparison.OrdinalIgnoreCase)));
+
+                    var transfers = g.Where(x => x.ActionType != null &&
+                        (x.ActionType.Contains("Promotion", StringComparison.OrdinalIgnoreCase) ||
+                         x.ActionType.Equals("Lateral Move", StringComparison.OrdinalIgnoreCase)));
+
+                    int totalVacantRoles = newHires.Count() + transfers.Count();
+
+                    return new
+                    {
+                        OrganizationalUnit = g.Key,
+                        NewHireTotal = newHires.Count(),
+                        NewHireMale = newHires.Count(x => x.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) == true),
+                        NewHireFemale = newHires.Count(x => x.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) == true),
+                        TransferTotal = transfers.Count(),
+                        TransferMale = transfers.Count(x => x.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) == true),
+                        TransferFemale = transfers.Count(x => x.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) == true),
+                        InternalHireRate = totalVacantRoles > 0
+                            ? Math.Round((double)transfers.Count() / totalVacantRoles * 100, 2)
+                            : 0.0
+                    };
+                })
+                .OrderBy(r => r.OrganizationalUnit)
+                .ToList();
+
+            //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+            using (var package = new ExcelPackage())
+            {
+                var ws = package.Workbook.Worksheets.Add($"Finance Analysis {month}");
+
+                var headers = new[]
+                {
+                "OrganizationalUnit",
+                "NewHireTotal",
+                "NewHireMale",
+                "NewHireFemale",
+                "TransferTotal",
+                "TransferMale",
+                "TransferFemale",
+                "InternalHireRate (%)"
+            };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    ws.Cells[1, i + 1].Value = headers[i];
+                    ws.Cells[1, i + 1].Style.Font.Bold = true;
+                }
+
+                int row = 2;
+                foreach (var r in rows)
+                {
+                    ws.Cells[row, 1].Value = r.OrganizationalUnit;
+                    ws.Cells[row, 2].Value = r.NewHireTotal;
+                    ws.Cells[row, 3].Value = r.NewHireMale;
+                    ws.Cells[row, 4].Value = r.NewHireFemale;
+                    ws.Cells[row, 5].Value = r.TransferTotal;
+                    ws.Cells[row, 6].Value = r.TransferMale;
+                    ws.Cells[row, 7].Value = r.TransferFemale;
+                    ws.Cells[row, 8].Value = r.InternalHireRate;
+                    ws.Cells[row, 8].Style.Numberformat.Format = "0.00";
+                    row++;
+                }
+
+                ws.Cells[1, 1, row - 1, headers.Length].AutoFitColumns();
+
+                return package.GetAsByteArray();
+            }
         }
     }
 }

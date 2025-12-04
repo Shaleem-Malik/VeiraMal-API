@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using OfficeOpenXml;
+using OfficeOpenXml.Style;
 using VeiraMal.API.Models;
 using VeiraMal.API.Services.Interfaces;
 
@@ -197,6 +198,226 @@ namespace VeiraMal.API.Services
             }
 
             return headcountList;
+        }
+
+        public async Task<byte[]> ExportAnalysisAsync()
+        {
+            var allEmployees = await _context.Headcounts.AsNoTracking().ToListAsync();
+            if (!allEmployees.Any())
+                return Array.Empty<byte>();
+
+            var rows = allEmployees
+                .GroupBy(e => e.OrganizationalKey)
+                .Select(g =>
+                {
+                    var totalInDept = g.Count();
+                    var tempCount = g.Count(e => e.Status?.Contains("Temporary", StringComparison.OrdinalIgnoreCase) ?? false);
+                    var permanentCount = totalInDept - tempCount;
+                    var maleCount = g.Count(e => e.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) ?? false);
+                    var femaleCount = g.Count(e => e.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) ?? false);
+
+                    var tenureSum = 0;
+                    var tenureCount = 0;
+                    foreach (var emp in g)
+                    {
+                        if (int.TryParse(emp.Tenure, out int tenure))
+                        {
+                            tenureSum += tenure;
+                            tenureCount++;
+                        }
+                    }
+                    var avgTenure = tenureCount > 0 ? tenureSum / (double)tenureCount : 0;
+
+                    return new
+                    {
+                        Department = g.Key ?? "Unknown",
+                        Headcount = totalInDept,
+                        HeadcountPercentage = totalInDept > 0 ? Math.Round(permanentCount * 100.0 / totalInDept, 2) : 0,
+                        TempPercentage = totalInDept > 0 ? Math.Round(tempCount * 100.0 / totalInDept, 2) : 0,
+                        MaleCount = maleCount,
+                        MalePercentage = totalInDept > 0 ? Math.Round(maleCount * 100.0 / totalInDept, 2) : 0,
+                        FemaleCount = femaleCount,
+                        FemalePercentage = totalInDept > 0 ? Math.Round(femaleCount * 100.0 / totalInDept, 2) : 0,
+                        TempCount = tempCount,
+                        AverageAge = Math.Round(g.Average(e => e.AgeOfEmployee), 2),
+                        AverageTenure = Math.Round(avgTenure, 2)
+                    };
+                })
+                .OrderByDescending(d => d.Headcount)
+                .ToList();
+
+            //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+            using (var package = new ExcelPackage())
+            {
+                var ws = package.Workbook.Worksheets.Add("Headcount Analysis");
+                var headers = new[]
+                {
+                "Department",
+                "Headcount",
+                "HeadcountPercentage",
+                "TempPercentage",
+                "MaleCount",
+                "MalePercentage",
+                "FemaleCount",
+                "FemalePercentage",
+                "TempCount",
+                "AverageAge",
+                "AverageTenure"
+            };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    ws.Cells[1, i + 1].Value = headers[i];
+                    ws.Cells[1, i + 1].Style.Font.Bold = true;
+                }
+
+                int row = 2;
+                foreach (var r in rows)
+                {
+                    ws.Cells[row, 1].Value = r.Department;
+                    ws.Cells[row, 2].Value = r.Headcount;
+                    ws.Cells[row, 3].Value = r.HeadcountPercentage;
+                    ws.Cells[row, 4].Value = r.TempPercentage;
+                    ws.Cells[row, 5].Value = r.MaleCount;
+                    ws.Cells[row, 6].Value = r.MalePercentage;
+                    ws.Cells[row, 7].Value = r.FemaleCount;
+                    ws.Cells[row, 8].Value = r.FemalePercentage;
+                    ws.Cells[row, 9].Value = r.TempCount;
+                    ws.Cells[row, 10].Value = r.AverageAge;
+                    ws.Cells[row, 11].Value = r.AverageTenure;
+
+                    // Format percentages and numeric cells
+                    ws.Cells[row, 3].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 4].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 6].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 8].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 10].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 11].Style.Numberformat.Format = "0.00";
+
+                    row++;
+                }
+
+                ws.Cells[1, 1, row - 1, headers.Length].AutoFitColumns();
+                return package.GetAsByteArray();
+            }
+        }
+
+        public async Task<byte[]> ExportFinanceAnalysisAsync(string month, string organizationalKey = "Finance")
+        {
+            var monthNorm = (month ?? "").Trim();
+            if (string.IsNullOrEmpty(monthNorm))
+                monthNorm = DateTime.UtcNow.ToString("MMMM");
+
+            var orgKeyToFilter = string.IsNullOrWhiteSpace(organizationalKey) ? "Finance" : organizationalKey.Trim();
+
+            var monthLower = monthNorm.ToLower();
+            var orgKeyLower = orgKeyToFilter.ToLower();
+
+            var financeEmployees = await _context.Headcounts
+                .AsNoTracking()
+                .Where(e => ((e.OrganizationalKey ?? "").ToLower() == orgKeyLower)
+                         && ((e.Month ?? "").ToLower() == monthLower))
+                .ToListAsync();
+
+            if (!financeEmployees.Any())
+                return Array.Empty<byte>();
+
+            var rows = financeEmployees
+                .GroupBy(e => e.OrganizationalUnit)
+                .Select(g =>
+                {
+                    var totalInUnit = g.Count();
+                    var tempCount = g.Count(e => e.Status?.Contains("Temporary", StringComparison.OrdinalIgnoreCase) ?? false);
+                    var permanentCount = totalInUnit - tempCount;
+
+                    var maleCount = g.Count(e => e.GenderKey?.Equals("Male", StringComparison.OrdinalIgnoreCase) ?? false);
+                    var femaleCount = g.Count(e => e.GenderKey?.Equals("Female", StringComparison.OrdinalIgnoreCase) ?? false);
+
+                    var tenureSum = 0;
+                    var tenureCount = 0;
+                    foreach (var emp in g)
+                    {
+                        if (int.TryParse(emp.Tenure, out int tenure))
+                        {
+                            tenureSum += tenure;
+                            tenureCount++;
+                        }
+                    }
+                    var avgTenure = tenureCount > 0 ? tenureSum / (double)tenureCount : 0;
+
+                    return new
+                    {
+                        OrganizationalUnit = g.Key ?? "Unknown",
+                        Headcount = totalInUnit,
+                        HeadcountPercentage = totalInUnit > 0 ? Math.Round(permanentCount * 100.0 / totalInUnit, 2) : 0,
+                        TempPercentage = totalInUnit > 0 ? Math.Round(tempCount * 100.0 / totalInUnit, 2) : 0,
+                        MaleCount = maleCount,
+                        MalePercentage = totalInUnit > 0 ? Math.Round(maleCount * 100.0 / totalInUnit, 2) : 0,
+                        FemaleCount = femaleCount,
+                        FemalePercentage = totalInUnit > 0 ? Math.Round(femaleCount * 100.0 / totalInUnit, 2) : 0,
+                        TempCount = tempCount,
+                        AverageAge = totalInUnit > 0 ? Math.Round(g.Average(e => e.AgeOfEmployee), 2) : 0,
+                        AverageTenure = Math.Round(avgTenure, 2)
+                    };
+                })
+                .OrderByDescending(d => d.Headcount)
+                .ToList();
+
+            //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+            using (var package = new ExcelPackage())
+            {
+                var ws = package.Workbook.Worksheets.Add($"Headcount_{organizationalKey}_{monthNorm}");
+                var headers = new[]
+                {
+                "OrganizationalUnit",
+                "Headcount",
+                "HeadcountPercentage",
+                "TempPercentage",
+                "MaleCount",
+                "MalePercentage",
+                "FemaleCount",
+                "FemalePercentage",
+                "TempCount",
+                "AverageAge",
+                "AverageTenure"
+            };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    ws.Cells[1, i + 1].Value = headers[i];
+                    ws.Cells[1, i + 1].Style.Font.Bold = true;
+                }
+
+                int row = 2;
+                foreach (var r in rows)
+                {
+                    ws.Cells[row, 1].Value = r.OrganizationalUnit;
+                    ws.Cells[row, 2].Value = r.Headcount;
+                    ws.Cells[row, 3].Value = r.HeadcountPercentage;
+                    ws.Cells[row, 4].Value = r.TempPercentage;
+                    ws.Cells[row, 5].Value = r.MaleCount;
+                    ws.Cells[row, 6].Value = r.MalePercentage;
+                    ws.Cells[row, 7].Value = r.FemaleCount;
+                    ws.Cells[row, 8].Value = r.FemalePercentage;
+                    ws.Cells[row, 9].Value = r.TempCount;
+                    ws.Cells[row, 10].Value = r.AverageAge;
+                    ws.Cells[row, 11].Value = r.AverageTenure;
+
+                    ws.Cells[row, 3].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 4].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 6].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 8].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 10].Style.Numberformat.Format = "0.00";
+                    ws.Cells[row, 11].Style.Numberformat.Format = "0.00";
+
+                    row++;
+                }
+
+                ws.Cells[1, 1, row - 1, headers.Length].AutoFitColumns();
+                return package.GetAsByteArray();
+            }
         }
 
         private string? GetStringValue(ExcelRange cell) => cell.Value?.ToString()?.Trim();

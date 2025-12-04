@@ -11,5 +11,8 @@ namespace VeiraMal.API.Services.Interfaces
 
         // Accept organizationalKey so the client can request analysis for any org key (not just Finance).
         Task<IEnumerable<object>> GetFinanceAnalysisAsync(string month, string organizationalKey = "Finance");
+
+        Task<byte[]> ExportAnalysisAsync();
+        Task<byte[]> ExportFinanceAnalysisAsync(string month, string organizationalKey = "Finance");
     }
 }

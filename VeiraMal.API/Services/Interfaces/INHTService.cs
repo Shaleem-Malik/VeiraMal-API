@@ -9,5 +9,8 @@ namespace VeiraMal.API.Services.Interfaces
         Task<IEnumerable<NHT>> GetAllAsync();
         Task<IEnumerable<object>> GetAnalysisAsync();
         Task<IEnumerable<object>> GetFinanceAnalysisAsync(string month);
+
+        Task<byte[]> ExportAnalysisAsync();
+        Task<byte[]> ExportFinanceAnalysisAsync(string month);
     }
 }

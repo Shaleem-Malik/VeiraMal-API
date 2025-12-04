@@ -11,5 +11,9 @@ namespace VeiraMal.API.Services.Interfaces
         Task<IEnumerable<Terms>> GetAllTermsAsync();
         Task<object> GetTurnoverAnalysisAsync();
         Task<IEnumerable<object>> GetFinanceAnalysisAsync(string month);
+
+        // NEW - exports
+        Task<byte[]> ExportTurnoverAnalysisAsync();
+        Task<byte[]> ExportFinanceAnalysisAsync(string month);
     }
 }

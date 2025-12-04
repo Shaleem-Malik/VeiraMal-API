@@ -50,5 +50,28 @@ namespace VeiraMal.API.Controllers
             var result = await _termsService.GetFinanceAnalysisAsync(month);
             return Ok(result);
         }
+
+        [HttpGet("analysis/export")]
+        public async Task<IActionResult> ExportTurnoverAnalysis()
+        {
+            var bytes = await _termsService.ExportTurnoverAnalysisAsync();
+            if (bytes == null || bytes.Length == 0)
+                return NoContent();
+
+            var fileName = $"Terms_Turnover_Analysis_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx";
+            return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+
+        [HttpGet("finance-analysis/export")]
+        public async Task<IActionResult> ExportFinanceAnalysis([FromQuery] string month)
+        {
+            var bytes = await _termsService.ExportFinanceAnalysisAsync(month);
+            if (bytes == null || bytes.Length == 0)
+                return NoContent();
+
+            var fileName = $"Terms_Finance_Analysis_{month}_{DateTime.UtcNow:yyyyMMddHHmmss}.xlsx";
+            return File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
+        }
+
     }
 }

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using OfficeOpenXml;
+using OfficeOpenXml.Style;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -218,6 +219,254 @@ namespace VeiraMal.API.Services
                 })
                 .OrderBy(r => r.OrganizationalUnit)
                 .ToList();
+        }
+
+        public async Task<byte[]> ExportTurnoverAnalysisAsync()
+        {
+            // reuse your analysis logic to build rows
+            var allTerms = await _context.Terms.AsNoTracking().ToListAsync();
+
+            var headcounts = await _context.Headcounts
+                .AsNoTracking()
+                .GroupBy(h => h.OrganizationalKey)
+                .Select(g => new
+                {
+                    Department = g.Key ?? "Unknown",
+                    TotalCount = g.Count(),
+                    MaleCount = g.Count(h => h.GenderKey == "Male"),
+                    FemaleCount = g.Count(h => h.GenderKey == "Female")
+                })
+                .ToListAsync();
+
+            var rows = allTerms
+                .GroupBy(t => t.OrganizationalKey ?? "Unknown")
+                .Select(g =>
+                {
+                    var dept = g.Key;
+                    var deptHeadcount = headcounts.FirstOrDefault(h => h.Department == dept)
+                        ?? new { Department = dept, TotalCount = 0, MaleCount = 0, FemaleCount = 0 };
+
+                    var voluntaryTerms = g.Where(t =>
+                        t.Action?.Equals("Voluntary", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Resignation", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Retirement", StringComparison.OrdinalIgnoreCase) == true);
+
+                    var involuntaryTerms = g.Where(t =>
+                        t.Action?.Equals("Involuntary", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Termination", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Retrenchment", StringComparison.OrdinalIgnoreCase) == true);
+
+                    double SafeRate(int num, int den) => den > 0 ? Math.Round(num * 100.0 / den, 2) : 0;
+
+                    return new
+                    {
+                        Department = dept,
+                        VoluntaryTotalRate = SafeRate(voluntaryTerms.Count(), deptHeadcount.TotalCount),
+                        VoluntaryTotalCount = voluntaryTerms.Count(),
+                        VoluntaryMaleRate = SafeRate(voluntaryTerms.Count(t => t.GenderKey == "Male"), deptHeadcount.MaleCount),
+                        VoluntaryMaleCount = voluntaryTerms.Count(t => t.GenderKey == "Male"),
+                        VoluntaryFemaleRate = SafeRate(voluntaryTerms.Count(t => t.GenderKey == "Female"), deptHeadcount.FemaleCount),
+                        VoluntaryFemaleCount = voluntaryTerms.Count(t => t.GenderKey == "Female"),
+                        InvoluntaryTotalRate = SafeRate(involuntaryTerms.Count(), deptHeadcount.TotalCount),
+                        InvoluntaryTotalCount = involuntaryTerms.Count(),
+                        InvoluntaryMaleRate = SafeRate(involuntaryTerms.Count(t => t.GenderKey == "Male"), deptHeadcount.MaleCount),
+                        InvoluntaryMaleCount = involuntaryTerms.Count(t => t.GenderKey == "Male"),
+                        InvoluntaryFemaleRate = SafeRate(involuntaryTerms.Count(t => t.GenderKey == "Female"), deptHeadcount.FemaleCount),
+                        InvoluntaryFemaleCount = involuntaryTerms.Count(t => t.GenderKey == "Female")
+                    };
+                })
+                .OrderBy(d => d.Department)
+                .ToList();
+
+            if (!rows.Any())
+                return Array.Empty<byte>();
+
+            //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+            using (var package = new ExcelPackage())
+            {
+                var ws = package.Workbook.Worksheets.Add("Turnover Analysis");
+                var headers = new[]
+                {
+                "Department",
+                "VoluntaryTotalRate",
+                "VoluntaryTotalCount",
+                "VoluntaryMaleRate",
+                "VoluntaryMaleCount",
+                "VoluntaryFemaleRate",
+                "VoluntaryFemaleCount",
+                "InvoluntaryTotalRate",
+                "InvoluntaryTotalCount",
+                "InvoluntaryMaleRate",
+                "InvoluntaryMaleCount",
+                "InvoluntaryFemaleRate",
+                "InvoluntaryFemaleCount"
+            };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    ws.Cells[1, i + 1].Value = headers[i];
+                    ws.Cells[1, i + 1].Style.Font.Bold = true;
+                }
+
+                int rowIndex = 2;
+                foreach (var r in rows)
+                {
+                    ws.Cells[rowIndex, 1].Value = r.Department;
+                    ws.Cells[rowIndex, 2].Value = r.VoluntaryTotalRate;
+                    ws.Cells[rowIndex, 3].Value = r.VoluntaryTotalCount;
+                    ws.Cells[rowIndex, 4].Value = r.VoluntaryMaleRate;
+                    ws.Cells[rowIndex, 5].Value = r.VoluntaryMaleCount;
+                    ws.Cells[rowIndex, 6].Value = r.VoluntaryFemaleRate;
+                    ws.Cells[rowIndex, 7].Value = r.VoluntaryFemaleCount;
+                    ws.Cells[rowIndex, 8].Value = r.InvoluntaryTotalRate;
+                    ws.Cells[rowIndex, 9].Value = r.InvoluntaryTotalCount;
+                    ws.Cells[rowIndex, 10].Value = r.InvoluntaryMaleRate;
+                    ws.Cells[rowIndex, 11].Value = r.InvoluntaryMaleCount;
+                    ws.Cells[rowIndex, 12].Value = r.InvoluntaryFemaleRate;
+                    ws.Cells[rowIndex, 13].Value = r.InvoluntaryFemaleCount;
+
+                    // format rates
+                    ws.Cells[rowIndex, 2].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 4].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 6].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 8].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 10].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 12].Style.Numberformat.Format = "0.00";
+
+                    rowIndex++;
+                }
+
+                ws.Cells[1, 1, rowIndex - 1, headers.Length].AutoFitColumns();
+                return package.GetAsByteArray();
+            }
+        }
+
+        public async Task<byte[]> ExportFinanceAnalysisAsync(string month)
+        {
+            var monthNorm = (month ?? "").Trim();
+            if (string.IsNullOrEmpty(monthNorm))
+                monthNorm = DateTime.UtcNow.ToString("MMMM");
+
+            var financeTerms = await _context.Terms
+                .AsNoTracking()
+                .Where(t => t.OrganizationalKey == "Finance" && t.Month == monthNorm)
+                .ToListAsync();
+
+            if (!financeTerms.Any())
+                return Array.Empty<byte>();
+
+            var financeHeadcounts = await _context.Headcounts
+                .AsNoTracking()
+                .Where(h => h.OrganizationalKey == "Finance" && h.Month == monthNorm)
+                .GroupBy(h => h.OrganizationalUnit)
+                .Select(g => new
+                {
+                    Unit = g.Key ?? "Unknown",
+                    TotalCount = g.Count(),
+                    MaleCount = g.Count(h => h.GenderKey == "Male"),
+                    FemaleCount = g.Count(h => h.GenderKey == "Female")
+                })
+                .ToListAsync();
+
+            var rows = financeTerms
+                .GroupBy(t => t.OrganizationalUnit ?? "Unknown")
+                .Select(g =>
+                {
+                    var unit = g.Key;
+                    var unitHeadcount = financeHeadcounts.FirstOrDefault(h => h.Unit == unit)
+                        ?? new { Unit = unit, TotalCount = 0, MaleCount = 0, FemaleCount = 0 };
+
+                    var voluntary = g.Where(t =>
+                        t.Action?.Equals("Voluntary", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Resignation", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Retirement", StringComparison.OrdinalIgnoreCase) == true);
+
+                    var involuntary = g.Where(t =>
+                        t.Action?.Equals("Involuntary", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Termination", StringComparison.OrdinalIgnoreCase) == true ||
+                        t.ReasonForAction?.Contains("Retrenchment", StringComparison.OrdinalIgnoreCase) == true);
+
+                    double SafeRate(int num, int den) => den > 0 ? Math.Round(num * 100.0 / den, 2) : 0;
+
+                    return new
+                    {
+                        OrganizationalUnit = unit,
+                        VoluntaryTotalRate = SafeRate(voluntary.Count(), unitHeadcount.TotalCount),
+                        VoluntaryTotalCount = voluntary.Count(),
+                        VoluntaryMaleRate = SafeRate(voluntary.Count(t => t.GenderKey == "Male"), unitHeadcount.MaleCount),
+                        VoluntaryMaleCount = voluntary.Count(t => t.GenderKey == "Male"),
+                        VoluntaryFemaleRate = SafeRate(voluntary.Count(t => t.GenderKey == "Female"), unitHeadcount.FemaleCount),
+                        VoluntaryFemaleCount = voluntary.Count(t => t.GenderKey == "Female"),
+                        InvoluntaryTotalRate = SafeRate(involuntary.Count(), unitHeadcount.TotalCount),
+                        InvoluntaryTotalCount = involuntary.Count(),
+                        InvoluntaryMaleRate = SafeRate(involuntary.Count(t => t.GenderKey == "Male"), unitHeadcount.MaleCount),
+                        InvoluntaryMaleCount = involuntary.Count(t => t.GenderKey == "Male"),
+                        InvoluntaryFemaleRate = SafeRate(involuntary.Count(t => t.GenderKey == "Female"), unitHeadcount.FemaleCount),
+                        InvoluntaryFemaleCount = involuntary.Count(t => t.GenderKey == "Female")
+                    };
+                })
+                .OrderBy(r => r.OrganizationalUnit)
+                .ToList();
+
+            //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
+
+            using (var package = new ExcelPackage())
+            {
+                var ws = package.Workbook.Worksheets.Add($"Terms_Finance_{monthNorm}");
+                var headers = new[]
+                {
+                "OrganizationalUnit",
+                "VoluntaryTotalRate",
+                "VoluntaryTotalCount",
+                "VoluntaryMaleRate",
+                "VoluntaryMaleCount",
+                "VoluntaryFemaleRate",
+                "VoluntaryFemaleCount",
+                "InvoluntaryTotalRate",
+                "InvoluntaryTotalCount",
+                "InvoluntaryMaleRate",
+                "InvoluntaryMaleCount",
+                "InvoluntaryFemaleRate",
+                "InvoluntaryFemaleCount"
+            };
+
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    ws.Cells[1, i + 1].Value = headers[i];
+                    ws.Cells[1, i + 1].Style.Font.Bold = true;
+                }
+
+                int rowIndex = 2;
+                foreach (var r in rows)
+                {
+                    ws.Cells[rowIndex, 1].Value = r.OrganizationalUnit;
+                    ws.Cells[rowIndex, 2].Value = r.VoluntaryTotalRate;
+                    ws.Cells[rowIndex, 3].Value = r.VoluntaryTotalCount;
+                    ws.Cells[rowIndex, 4].Value = r.VoluntaryMaleRate;
+                    ws.Cells[rowIndex, 5].Value = r.VoluntaryMaleCount;
+                    ws.Cells[rowIndex, 6].Value = r.VoluntaryFemaleRate;
+                    ws.Cells[rowIndex, 7].Value = r.VoluntaryFemaleCount;
+                    ws.Cells[rowIndex, 8].Value = r.InvoluntaryTotalRate;
+                    ws.Cells[rowIndex, 9].Value = r.InvoluntaryTotalCount;
+                    ws.Cells[rowIndex, 10].Value = r.InvoluntaryMaleRate;
+                    ws.Cells[rowIndex, 11].Value = r.InvoluntaryMaleCount;
+                    ws.Cells[rowIndex, 12].Value = r.InvoluntaryFemaleRate;
+                    ws.Cells[rowIndex, 13].Value = r.InvoluntaryFemaleCount;
+
+                    ws.Cells[rowIndex, 2].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 4].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 6].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 8].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 10].Style.Numberformat.Format = "0.00";
+                    ws.Cells[rowIndex, 12].Style.Numberformat.Format = "0.00";
+
+                    rowIndex++;
+                }
+
+                ws.Cells[1, 1, rowIndex - 1, headers.Length].AutoFitColumns();
+                return package.GetAsByteArray();
+            }
         }
 
     }
