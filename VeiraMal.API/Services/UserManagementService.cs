@@ -12,11 +12,13 @@ namespace VeiraMal.API.Services
         private readonly AppDbContext _db;
         private readonly IUserService _userService;
         private readonly IEmailService _email;
-        public UserManagementService(AppDbContext db, IUserService userService, IEmailService email)
+        private readonly IWebHostEnvironment _env;
+        public UserManagementService(AppDbContext db, IUserService userService, IEmailService email, IWebHostEnvironment env)
         {
             _db = db;
             _userService = userService;
             _email = email;
+            _env = env;
         }
 
         private int NextEmployeeNumber(Guid companyId)
@@ -313,5 +315,92 @@ namespace VeiraMal.API.Services
             await _db.SaveChangesAsync();
             return true;
         }
+
+        public async Task<string?> UploadProfilePictureAsync(Guid companyId, int userId, IFormFile file)
+        {
+            // Basic validations
+            if (file == null || file.Length == 0) return null;
+            // limit to 2 MB
+            const long MAX_BYTES = 2 * 1024 * 1024;
+            if (file.Length > MAX_BYTES) throw new InvalidOperationException("File too large (max 2 MB).");
+
+            // allow only common image types
+            var permitted = new[] { "image/jpeg", "image/png", "image/webp" };
+            if (!permitted.Contains(file.ContentType?.ToLowerInvariant())) throw new InvalidOperationException("Invalid file type.");
+
+            var user = await _db.Users.FirstOrDefaultAsync(u => u.CompanyId == companyId && u.UserId == userId);
+            if (user == null) return null;
+
+            // Build folder path: wwwroot/uploads/{companyId}
+            var uploadsRoot = Path.Combine(_env.WebRootPath ?? "wwwroot", "uploads", companyId.ToString());
+            if (!Directory.Exists(uploadsRoot)) Directory.CreateDirectory(uploadsRoot);
+
+            // Determine file extension
+            var ext = Path.GetExtension(file.FileName);
+            if (string.IsNullOrEmpty(ext))
+            {
+                // derive from content type (fallback)
+                ext = file.ContentType switch
+                {
+                    "image/png" => ".png",
+                    "image/webp" => ".webp",
+                    _ => ".jpg",
+                };
+            }
+
+            // create file name using user guid so it's stable on updates
+            var filename = $"{user.UserGuid}{ext}";
+            var filePath = Path.Combine(uploadsRoot, filename);
+
+            // remove old files with different ext (optional)
+            try
+            {
+                // remove any file that starts with userguid (clean previous)
+                var existing = Directory.EnumerateFiles(uploadsRoot, $"{user.UserGuid}.*").ToList();
+                foreach (var f in existing)
+                {
+                    if (!string.Equals(f, filePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { System.IO.File.Delete(f); } catch { /* ignore */ }
+                    }
+                }
+            }
+            catch { /* ignore */ }
+
+            // Save the incoming file
+            using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await file.CopyToAsync(stream);
+            }
+
+            // generate public URL relative to site (e.g., /uploads/{companyId}/{filename})
+            var publicUrl = $"/uploads/{companyId}/{filename}";
+
+            // update DB
+            user.ProfilePictureUrl = publicUrl;
+            await _db.SaveChangesAsync();
+
+            return publicUrl;
+        }
+
+        public async Task<bool> RemoveProfilePictureAsync(Guid companyId, int userId)
+        {
+            var user = await _db.Users.FirstOrDefaultAsync(u => u.CompanyId == companyId && u.UserId == userId);
+            if (user == null) return false;
+
+            if (string.IsNullOrEmpty(user.ProfilePictureUrl)) return false;
+
+            var relativePath = user.ProfilePictureUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+            var full = Path.Combine(_env.WebRootPath ?? "wwwroot", relativePath);
+            if (System.IO.File.Exists(full))
+            {
+                try { System.IO.File.Delete(full); } catch { /* ignore */ }
+            }
+
+            user.ProfilePictureUrl = null;
+            await _db.SaveChangesAsync();
+            return true;
+        }
+
     }
 }

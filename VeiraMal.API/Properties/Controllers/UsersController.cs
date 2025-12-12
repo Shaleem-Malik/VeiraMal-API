@@ -274,5 +274,71 @@ namespace VeiraMal.API.Controllers
             if (!ok) return NotFound(new { Message = "User not found" });
             return Ok(new { Message = "User has been activated successfully." });
         }
+
+        [HttpPost("{id:int}/profile-picture")]
+        [Authorize]
+        public async Task<IActionResult> UploadProfilePicture(int id, [FromQuery] Guid? subCompanyId)
+        {
+            var baseCompanyId = BaseCompanyIdFromClaims();
+            var callerUserId = CallerUserIdFromClaims();
+
+            Guid targetCompanyId;
+            try
+            {
+                targetCompanyId = await ResolveTargetCompanyIdAsync(baseCompanyId, callerUserId, subCompanyId);
+            }
+            catch (UnauthorizedAccessException) { return Forbid(); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+
+            // ensure user belongs to targetCompany
+            var user = await _db.Users.FirstOrDefaultAsync(u => u.UserId == id);
+            if (user == null) return NotFound();
+            if (user.CompanyId != targetCompanyId) return Forbid();
+
+            var file = Request.Form.Files.FirstOrDefault();
+            if (file == null) return BadRequest(new { message = "No file uploaded." });
+
+            try
+            {
+                var url = await _manager.UploadProfilePictureAsync(targetCompanyId, id, file);
+                if (url == null) return BadRequest(new { message = "Upload failed." });
+                return Ok(new { url });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                // log ex
+                return StatusCode(500, new { message = "Server error." });
+            }
+        }
+
+        [HttpDelete("{id:int}/profile-picture")]
+        [Authorize]
+        public async Task<IActionResult> DeleteProfilePicture(int id, [FromQuery] Guid? subCompanyId)
+        {
+            var baseCompanyId = BaseCompanyIdFromClaims();
+            var callerUserId = CallerUserIdFromClaims();
+
+            Guid targetCompanyId;
+            try
+            {
+                targetCompanyId = await ResolveTargetCompanyIdAsync(baseCompanyId, callerUserId, subCompanyId);
+            }
+            catch (UnauthorizedAccessException) { return Forbid(); }
+            catch (InvalidOperationException ex) { return BadRequest(new { message = ex.Message }); }
+
+            // ensure user belongs to targetCompany
+            var user = await _db.Users.FirstOrDefaultAsync(u => u.UserId == id);
+            if (user == null) return NotFound();
+            if (user.CompanyId != targetCompanyId) return Forbid();
+
+            var ok = await _manager.RemoveProfilePictureAsync(targetCompanyId, id);
+            if (!ok) return NotFound();
+            return Ok(new { message = "Removed" });
+        }
+
     }
 }

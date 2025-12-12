@@ -29,5 +29,7 @@
         // true when user is initially created; set to false after first successful login
         public bool IsFirstLogin { get; set; } = true;
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        public string? ProfilePictureUrl { get; set; }
     }
 }

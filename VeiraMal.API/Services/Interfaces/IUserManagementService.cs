@@ -13,5 +13,9 @@ namespace VeiraMal.API.Services.Interfaces
         Task<User?> UpdateUserAsync(Guid companyId, UpdateUserDto dto);
         Task<bool> InactivateUserAsync(Guid companyId, int userId);
         Task<bool> ActivateUserAsync(Guid companyId, int userId);
+
+        Task<string?> UploadProfilePictureAsync(Guid companyId, int userId, IFormFile file);
+        Task<bool> RemoveProfilePictureAsync(Guid companyId, int userId);
+
     }
 }

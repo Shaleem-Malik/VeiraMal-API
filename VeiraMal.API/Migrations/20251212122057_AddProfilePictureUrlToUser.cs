@@ -1,0 +1,30 @@
+﻿using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+namespace VeiraMal.API.Migrations
+{
+    /// <inheritdoc />
+    public partial class AddProfilePictureUrlToUser : Migration
+    {
+        /// <inheritdoc />
+        protected override void Up(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.AddColumn<string>(
+                name: "ProfilePictureUrl",
+                schema: "dbo",
+                table: "Users",
+                type: "nvarchar(max)",
+                nullable: true);
+        }
+
+        /// <inheritdoc />
+        protected override void Down(MigrationBuilder migrationBuilder)
+        {
+            migrationBuilder.DropColumn(
+                name: "ProfilePictureUrl",
+                schema: "dbo",
+                table: "Users");
+        }
+    }
+}

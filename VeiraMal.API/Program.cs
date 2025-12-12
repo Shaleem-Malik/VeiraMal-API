@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 using Microsoft.IdentityModel.Tokens;
 using OfficeOpenXml;
 using Stripe;
@@ -144,6 +145,31 @@ builder.Services.AddCors(options =>
 });
 
 var app = builder.Build();
+
+// resolve IWebHostEnvironment from DI
+var env = app.Services.GetRequiredService<IWebHostEnvironment>();
+
+// ensure uploads folder exists under wwwroot
+var uploadsRoot = Path.Combine(env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"), "uploads");
+if (!Directory.Exists(uploadsRoot))
+{
+    Directory.CreateDirectory(uploadsRoot);
+}
+
+// serve wwwroot normally
+app.UseStaticFiles();
+
+// serve uploads specifically with caching
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(uploadsRoot),
+    RequestPath = "/uploads",
+    OnPrepareResponse = ctx =>
+    {
+        ctx.Context.Response.Headers["Cache-Control"] = "public,max-age=86400";
+    }
+});
+
 
 // ===== DATABASE DIAGNOSTICS =====
 using (var scope = app.Services.CreateScope())
