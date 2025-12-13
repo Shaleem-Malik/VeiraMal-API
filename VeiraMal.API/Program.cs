@@ -54,6 +54,9 @@ builder.Services.AddScoped<ITokenBlacklistService, TokenBlacklistService>();
 builder.Services.AddDataProtection();
 builder.Services.AddScoped<IStripeService, StripeService>();
 
+// Register PasswordValidator as a service
+builder.Services.AddScoped<PasswordValidator>();
+
 StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
 builder.Services.AddControllers();
 

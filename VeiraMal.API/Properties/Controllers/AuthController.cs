@@ -12,6 +12,7 @@ using VeiraMal.API;
 using VeiraMal.API.DTOs;
 using VeiraMal.API.Models;
 using VeiraMal.API.Services.Interfaces;
+using VeiraMal.API.Services;
 
 namespace VeiraMal.API.Controllers
 {
@@ -23,13 +24,15 @@ namespace VeiraMal.API.Controllers
         private readonly AppDbContext _db;
         private readonly IConfiguration _cfg;
         private readonly IEmailService _emailService;
+        private readonly PasswordValidator _passwordValidator;
 
-        public AuthController(IUserService userService, AppDbContext db, IConfiguration cfg, IEmailService emailService)
+        public AuthController(IUserService userService, AppDbContext db, IConfiguration cfg, IEmailService emailService, PasswordValidator passwordValidator)
         {
             _userService = userService;
             _db = db;
             _cfg = cfg;
             _emailService = emailService;
+            _passwordValidator = passwordValidator;
         }
 
         [HttpPost("login")]
@@ -233,6 +236,59 @@ namespace VeiraMal.API.Controllers
             await _emailService.SendEmailAsync(user.Email, subject, body);
 
             return Ok(new { Message = "Temporary password has been sent to the registered email address." });
+        }
+
+        [Authorize]
+        [HttpPost("change-password")]
+        public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordDto dto)
+        {
+            // Validate input
+            if (string.IsNullOrWhiteSpace(dto.CurrentPassword) || string.IsNullOrWhiteSpace(dto.NewPassword))
+                return BadRequest(new { Message = "Current password and new password are required." });
+
+            // Trim whitespace from passwords
+            dto.CurrentPassword = dto.CurrentPassword.Trim();
+            dto.NewPassword = dto.NewPassword.Trim();
+
+            // Check if new password is not empty after trim
+            if (string.IsNullOrWhiteSpace(dto.NewPassword))
+                return BadRequest(new { Message = "New password cannot be empty or whitespace." });
+
+            // Use the injected password validator
+            var (isValid, message) = _passwordValidator.ValidatePassword(dto.NewPassword);
+            if (!isValid)
+                return BadRequest(new { Message = message });
+
+            // Get user from claims
+            var userIdClaim = User.FindFirst("userId")?.Value;
+            if (!int.TryParse(userIdClaim, out var userId))
+                return Unauthorized(new { Message = "Invalid user token." });
+
+            var user = await _db.Users.FindAsync(userId);
+            if (user == null)
+                return NotFound(new { Message = "User not found." });
+
+            // Verify current password
+            var isCurrentPasswordValid = await _userService.VerifyPasswordAsync(user, dto.CurrentPassword);
+            if (!isCurrentPasswordValid)
+                return BadRequest(new { Message = "Current password is incorrect." });
+
+            // Check if new password is same as current (optional but recommended)
+            // Note: Use string.Equals for comparison if case sensitivity matters
+            if (dto.CurrentPassword.Equals(dto.NewPassword, StringComparison.Ordinal))
+                return BadRequest(new { Message = "New password must be different from current password." });
+
+            // Set new password
+            await _userService.SetPasswordHashAsync(user, dto.NewPassword);
+
+            // IMPORTANT: DO NOT set IsPasswordResetRequired = true
+            // The user should NOT be forced to reset password on next login
+            user.IsPasswordResetRequired = false;
+            // Keep IsFirstLogin as is (false if they've logged in before)
+
+            await _db.SaveChangesAsync();
+
+            return Ok(new { Message = "Password changed successfully. You can now log in with your new password." });
         }
 
 
