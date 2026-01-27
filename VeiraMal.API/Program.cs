@@ -51,6 +51,11 @@ builder.Services.AddScoped<IUserManagementService, UserManagementService>();
 builder.Services.AddScoped<ISubCompanyResolver, SubCompanyResolver>();
 builder.Services.AddScoped<ITokenBlacklistService, TokenBlacklistService>();
 
+builder.Services.AddScoped<ILeaveBalanceService, LeaveBalanceService>();
+builder.Services.AddScoped<ILeaveTakenService, LeaveTakenService>();
+builder.Services.AddScoped<IBaseRatesService, BaseRatesService>();
+builder.Services.AddScoped<ILiabilityService, LiabilityService>();
+
 builder.Services.AddDataProtection();
 builder.Services.AddScoped<IStripeService, StripeService>();
 

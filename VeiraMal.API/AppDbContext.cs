@@ -38,6 +38,12 @@ namespace VeiraMal.API
 
         public DbSet<RevokedToken> RevokedTokens { get; set; }
 
+        public DbSet<UploadBatch> UploadBatches { get; set; }
+        public DbSet<LeaveTaken> LeaveTakens { get; set; }
+        public DbSet<LeaveBalance> LeaveBalances { get; set; }
+        public DbSet<BaseRate> BaseRates { get; set; }
+        public DbSet<EmployeeLiability> EmployeeLiabilities { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             // Existing table mappings
