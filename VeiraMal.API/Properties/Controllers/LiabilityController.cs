@@ -1,5 +1,9 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
 using VeiraMal.API.DTOs;
 using VeiraMal.API.Models;
 using VeiraMal.API.Services.Interfaces;
@@ -35,10 +39,12 @@ namespace VeiraMal.API.Controllers
         [HttpGet("employee/{employeeId:int}")]
         public async Task<ActionResult<EmployeeLiabilityDto>> GetEmployeeLiability(int employeeId, DateTime? date = null)
         {
-            DateTime calcDate = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateStart = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateEnd = calcDateStart.AddDays(1);
+
             var rec = await _context.EmployeeLiabilities
                 .AsNoTracking()
-                .Where(x => x.EmployeeId == employeeId && x.CalculationDate == calcDate)
+                .Where(x => x.EmployeeId == employeeId && x.CalculationDate >= calcDateStart && x.CalculationDate < calcDateEnd)
                 .OrderByDescending(x => x.CreatedAt)
                 .FirstOrDefaultAsync();
 
@@ -66,12 +72,13 @@ namespace VeiraMal.API.Controllers
         [HttpGet("top-employees")]
         public async Task<ActionResult<IEnumerable<TopEmployeeDto>>> GetTopEmployees(int limit = 50, DateTime? date = null)
         {
-            DateTime calcDate = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateStart = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateEnd = calcDateStart.AddDays(1);
 
             // 1) get top employees by liability (employee ids and totals)
             var topQuery = await _context.EmployeeLiabilities
                 .AsNoTracking()
-                .Where(x => x.CalculationDate == calcDate)
+                .Where(x => x.CalculationDate >= calcDateStart && x.CalculationDate < calcDateEnd)
                 .GroupBy(x => x.EmployeeId)
                 .Select(g => new { EmployeeId = g.Key, TotalLiability = g.Sum(x => x.LiabilityAmount) })
                 .OrderByDescending(x => x.TotalLiability)
@@ -84,7 +91,6 @@ namespace VeiraMal.API.Controllers
             var employeeIds = topQuery.Select(x => x.EmployeeId).Where(id => id != 0).Distinct().ToArray();
 
             // 3) load Headcounts rows for those employees and create a safe map:
-            // group by PersonnelNumber and pick the most recent record (by Id) for duplicates.
             var headcountRows = await _context.Headcounts
                 .AsNoTracking()
                 .Where(h => employeeIds.Contains(h.PersonnelNumber))
@@ -93,8 +99,7 @@ namespace VeiraMal.API.Controllers
             var namesMap = headcountRows
                 .Where(h => h.PersonnelNumber != 0)
                 .GroupBy(h => h.PersonnelNumber)
-                .ToDictionary(g => g.Key, g => (g.OrderByDescending(h => h.PersonnelNumber) // use Id if you have it, else order by something stable
-                                                    .FirstOrDefault()));
+                .ToDictionary(g => g.Key, g => g.OrderByDescending(h => h.Id).FirstOrDefault());
 
             // 4) build DTOs using the safe map; if no name exists, leave EmployeeName null
             var result = topQuery.Select(x =>
@@ -120,12 +125,13 @@ namespace VeiraMal.API.Controllers
         [HttpGet("top-departments")]
         public async Task<ActionResult<IEnumerable<DepartmentSummaryDto>>> GetTopDepartments(int limit = 50, DateTime? date = null)
         {
-            DateTime calcDate = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateStart = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateEnd = calcDateStart.AddDays(1);
 
             var q = from el in _context.EmployeeLiabilities
                     join hc in _context.Headcounts on el.EmployeeId equals hc.PersonnelNumber
-                    where el.CalculationDate == calcDate
-                    group new { el, hc } by hc.OrganizationalUnit into g // replace .Position with Function if you store Function in Headcount
+                    where el.CalculationDate >= calcDateStart && el.CalculationDate < calcDateEnd
+                    group new { el, hc } by hc.OrganizationalUnit into g
                     select new
                     {
                         Department = g.Key ?? "Unknown",
@@ -151,11 +157,12 @@ namespace VeiraMal.API.Controllers
         [HttpGet("region-summary")]
         public async Task<ActionResult<IEnumerable<RegionSummaryDto>>> GetRegionSummary(DateTime? date = null)
         {
-            DateTime calcDate = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateStart = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateEnd = calcDateStart.AddDays(1);
 
             var q = from el in _context.EmployeeLiabilities
                     join hc in _context.Headcounts on el.EmployeeId equals hc.PersonnelNumber
-                    where el.CalculationDate == calcDate
+                    where el.CalculationDate >= calcDateStart && el.CalculationDate < calcDateEnd
                     group new { el, hc } by hc.BusinessUnit into g
                     select new
                     {
@@ -176,15 +183,24 @@ namespace VeiraMal.API.Controllers
             return Ok(dto);
         }
 
+        // Return latest available calculation date (helpful for UI)
+        [HttpGet("latest-calculation")]
+        public async Task<ActionResult<DateTime?>> GetLatestCalculationDate()
+        {
+            var latest = await _context.EmployeeLiabilities.MaxAsync(x => (DateTime?)x.CalculationDate);
+            return Ok(latest);
+        }
+
         [HttpGet("tracker")]
         public async Task<ActionResult<IEnumerable<EmployeeLiabilityFullDto>>> GetLiabilityTracker(DateTime? date = null)
         {
-            DateTime calcDate = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateStart = date?.Date ?? DateTime.UtcNow.Date;
+            DateTime calcDateEnd = calcDateStart.AddDays(1);
 
-            // 1) Load liabilities for the requested calculation date
+            // 1) Load liabilities for the requested calculation date (range)
             var liabilities = await _context.EmployeeLiabilities
                 .AsNoTracking()
-                .Where(x => x.CalculationDate == calcDate)
+                .Where(x => x.CalculationDate >= calcDateStart && x.CalculationDate < calcDateEnd)
                 .ToListAsync();
 
             if (!liabilities.Any()) return Ok(new List<EmployeeLiabilityFullDto>());
@@ -204,7 +220,7 @@ namespace VeiraMal.API.Controllers
                 .GroupBy(h => h.PersonnelNumber)
                 .ToDictionary(
                     g => g.Key,
-                    g => g.OrderByDescending(h => h.Id).FirstOrDefault()  // Id exists in Headcount model
+                    g => g.OrderByDescending(h => h.Id).FirstOrDefault()
                 );
 
             // 4) Prefetch latest LeaveBalance per employee (pick highest Id as "latest")
