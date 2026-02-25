@@ -291,7 +291,31 @@ namespace VeiraMal.API.Controllers
             return Ok(new { Message = "Password changed successfully. You can now log in with your new password." });
         }
 
+        [Authorize]
+        [HttpPost("refresh")]
+        public async Task<IActionResult> Refresh()
+        {
+            // get userId from token claims
+            var userIdClaim = User.FindFirst("userId")?.Value;
+            if (!int.TryParse(userIdClaim, out var userId))
+                return Unauthorized(new { Message = "Invalid user token." });
 
+            var user = await _db.Users.FindAsync(userId);
+            if (user == null)
+                return Unauthorized(new { Message = "User not found." });
+
+            // If you want to guard refresh (e.g., prevent refresh if account inactive)
+            if (!user.IsActive)
+                return Unauthorized(new { Message = "Account inactive." });
+
+            // Build business units for token (re-using existing helper)
+            var businessUnits = ParseBusinessUnits(user.BusinessUnit);
+
+            // Generate a fresh token -- this uses the existing GenerateJwtToken method you already have
+            var newToken = GenerateJwtToken(user, includeMustReset: user.IsPasswordResetRequired, businessUnits: businessUnits, isFirstLogin: false);
+
+            return Ok(new { Token = newToken });
+        }
 
         // Add `using System.Collections.Generic;` and `using System.Linq;` at top of file if not present.
 
