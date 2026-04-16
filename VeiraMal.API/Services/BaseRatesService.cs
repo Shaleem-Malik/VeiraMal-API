@@ -17,57 +17,20 @@ namespace VeiraMal.API.Services
         /// </summary>
         public async Task<string> EnsureBaseRatesAsync(IFormFile? file = null, RateUnit defaultUnit = RateUnit.Hourly)
         {
-            // 1) parse file content first (no DB calls here)
-            var parsed = new List<BaseRate>();
-            if (file != null)
+            if (file == null)
             {
-                parsed = await ParseBaseRatesAsync(file, defaultUnit); // your parser
+                return "No file provided.";
             }
 
-            var strategy = _context.Database.CreateExecutionStrategy();
+            var parsed = await ParseBaseRatesAsync(file, defaultUnit);
 
-            return await strategy.ExecuteAsync(async () =>
-            {
-                using var tx = await _context.Database.BeginTransactionAsync();
-                try
-                {
-                    // Prefetch existing BaseRates to avoid N queries inside loop
-                    var existingRates = await _context.BaseRates.ToListAsync();
-                    var existingRatesByEmp = existingRates.ToDictionary(b => b.EmployeeId);
+            _context.BaseRates.RemoveRange(_context.BaseRates);
+            await _context.SaveChangesAsync();
 
-                    int updated = 0, inserted = 0;
+            await _context.BaseRates.AddRangeAsync(parsed);
+            await _context.SaveChangesAsync();
 
-                    // Upsert parsed rates only — DO NOT create defaults
-                    foreach (var pr in parsed)
-                    {
-                        if (existingRatesByEmp.TryGetValue(pr.EmployeeId, out var existing))
-                        {
-                            existing.Rate = pr.Rate;
-                            existing.RateUnit = pr.RateUnit;
-                            existing.IsDefault = false;
-                            existing.CreatedAt = DateTime.UtcNow;
-                            updated++;
-                        }
-                        else
-                        {
-                            pr.IsDefault = false;
-                            pr.CreatedAt = DateTime.UtcNow;
-                            await _context.BaseRates.AddAsync(pr);
-                            inserted++;
-                        }
-                    }
-
-                    await _context.SaveChangesAsync();
-                    await tx.CommitAsync();
-
-                    return $"Parsed: {parsed.Count}. Updated: {updated}. Inserted: {inserted}. Default rates created: 0.";
-                }
-                catch
-                {
-                    await tx.RollbackAsync();
-                    throw;
-                }
-            });
+            return $"{parsed.Count} BaseRate records uploaded (old data replaced).";
         }
 
 

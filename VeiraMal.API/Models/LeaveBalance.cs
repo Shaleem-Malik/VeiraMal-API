@@ -7,9 +7,6 @@ namespace VeiraMal.API.Models
     {
         [Key]
         public int Id { get; set; }
-        public int UploadBatchId { get; set; }
-        [ForeignKey(nameof(UploadBatchId))]
-        public UploadBatch? UploadBatch { get; set; }
 
         public int EmployeeId { get; set; }               // Personnel number
         public string? EmployeeName { get; set; }

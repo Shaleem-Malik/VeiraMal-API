@@ -1,18 +1,22 @@
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using System;
+using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
+using System.Linq;
 using System.Security.Claims;
 using System.Text;
-using System.Linq;
 using System.Threading.Tasks;
 using VeiraMal.API;
 using VeiraMal.API.DTOs;
 using VeiraMal.API.Models;
-using VeiraMal.API.Services.Interfaces;
 using VeiraMal.API.Services;
+using VeiraMal.API.Services.Interfaces;
 
 namespace VeiraMal.API.Controllers
 {
@@ -35,6 +39,7 @@ namespace VeiraMal.API.Controllers
             _passwordValidator = passwordValidator;
         }
 
+        #region Existing endpoints (unchanged)
         [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginDto dto)
         {
@@ -76,9 +81,6 @@ namespace VeiraMal.API.Controllers
             return Ok(resp);
         }
 
-
-
-
         [Authorize]
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto dto)
@@ -101,7 +103,7 @@ namespace VeiraMal.API.Controllers
 
             // send welcome email
             var subject = $"Welcome to {(await _db.Companies.FindAsync(user.CompanyId))?.CompanyName ?? "our app"}";
-            var signinUrl = $"{Request.Scheme}://{Request.Host.Value}/signin";
+            var signinUrl = "https://dev.hranalytix.com/VeiraMal-Project/signin";
             var body = $@"
                 <!doctype html>
                 <html>
@@ -316,9 +318,160 @@ namespace VeiraMal.API.Controllers
 
             return Ok(new { Token = newToken });
         }
+        #endregion
 
-        // Add `using System.Collections.Generic;` and `using System.Linq;` at top of file if not present.
+        #region Impersonation accept endpoint (NEW)
+        // DTO used for incoming accept request
+        public class AcceptImpersonationDto
+        {
+            public string Token { get; set; } = "";
+            public string? Redirect { get; set; } // optional redirect path (e.g., "/app/dashboard")
+        }
 
+        /// <summary>
+        /// POST /api/auth/impersonate/accept
+        /// Accepts the short-lived impersonation token (created by SuperAdmin) and
+        /// creates a cookie-based session for the impersonated tenant in this new tab.
+        /// Returns { redirectUrl } which client should navigate to.
+        /// This endpoint must be AllowAnonymous because the token itself is the proof.
+        /// </summary>
+        [HttpPost("impersonate/accept")]
+        [AllowAnonymous]
+        public async Task<IActionResult> AcceptImpersonation([FromBody] AcceptImpersonationDto dto)
+        {
+            if (dto == null || string.IsNullOrWhiteSpace(dto.Token))
+                return BadRequest(new { message = "Token is required." });
+
+            try
+            {
+                // Read JWT validation parameters from config
+                var key = _cfg.GetValue<string>("Jwt:Key");
+                var issuer = _cfg.GetValue<string>("Jwt:Issuer");
+                var audience = _cfg.GetValue<string>("Jwt:Audience");
+
+                if (string.IsNullOrWhiteSpace(key))
+                    return StatusCode(500, new { message = "Server not configured for impersonation (missing Jwt:Key)." });
+
+                var tokenHandler = new JwtSecurityTokenHandler();
+                var validationParameters = new TokenValidationParameters
+                {
+                    ValidateIssuerSigningKey = true,
+                    IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key)),
+                    ValidateIssuer = !string.IsNullOrWhiteSpace(issuer),
+                    ValidIssuer = issuer,
+                    ValidateAudience = !string.IsNullOrWhiteSpace(audience),
+                    ValidAudience = audience,
+                    ValidateLifetime = true,
+                    ClockSkew = TimeSpan.FromSeconds(30),
+                };
+
+                // Validate token and obtain principal
+                ClaimsPrincipal principal;
+                try
+                {
+                    principal = tokenHandler.ValidateToken(dto.Token, validationParameters, out var validatedToken);
+                }
+                catch (SecurityTokenExpiredException)
+                {
+                    return BadRequest(new { message = "Impersonation token has expired." });
+                }
+                catch (Exception ex)
+                {
+                    return BadRequest(new { message = $"Invalid impersonation token: {ex.Message}" });
+                }
+
+                // Verify impersonation claim
+                var impClaim = principal.Claims.FirstOrDefault(c => c.Type == "impersonation" && c.Value == "true");
+                if (impClaim == null)
+                    return BadRequest(new { message = "Token is not an impersonation token." });
+
+                // Extract companyId
+                var companyIdClaim = principal.Claims.FirstOrDefault(c => c.Type == "companyId")?.Value;
+                if (string.IsNullOrWhiteSpace(companyIdClaim) || !Guid.TryParse(companyIdClaim, out var companyId))
+                    return BadRequest(new { message = "companyId claim missing or invalid." });
+
+                var company = await _db.Companies.FindAsync(companyId);
+                if (company == null)
+                    return BadRequest(new { message = "Company not found." });
+
+                // Optional: if userId provided, validate allowed
+                int? impersonateUserId = null;
+                var userIdClaim = principal.Claims.FirstOrDefault(c => c.Type == "userId")?.Value;
+                if (!string.IsNullOrWhiteSpace(userIdClaim) && int.TryParse(userIdClaim, out var parsedUid))
+                {
+                    var user = await _db.Users.FindAsync(parsedUid);
+                    if (user == null)
+                        return BadRequest(new { message = "Impersonated user not found." });
+
+                    // allow impersonation if user belongs to the target company OR is a parent-company user assigned to this subcompany
+                    var allowed = user.CompanyId == companyId;
+                    if (!allowed && company.ParentCompanyId.HasValue)
+                    {
+                        var parentId = company.ParentCompanyId.Value;
+                        if (user.CompanyId == parentId)
+                        {
+                            var assigned = await _db.CompanySuperUserAssignments.AnyAsync(a => a.CompanyId == companyId && a.UserId == user.UserId);
+                            allowed = assigned;
+                        }
+                    }
+
+                    if (!allowed)
+                        return BadRequest(new { message = "User cannot be impersonated for the given company." });
+
+                    impersonateUserId = parsedUid;
+                }
+
+                // OPTIONAL: Add replay-protection here
+                // e.g., check a DB table or cache to ensure the token hash hasn't been used already.
+                // If you want one-time use, store a short hash of `dto.Token` at token creation time and verify here.
+
+                // Build claims for the new cookie principal that the application will use.
+                var cookieClaims = new List<Claim>
+                {
+                    new Claim("companyId", companyId.ToString()),
+                    new Claim("isImpersonation", "true")
+                };
+
+                // include impersonated user details if present
+                if (impersonateUserId.HasValue)
+                    cookieClaims.Add(new Claim("userId", impersonateUserId.Value.ToString()));
+
+                // include who performed the impersonation (from the original token)
+                var performedBy = principal.Claims.FirstOrDefault(c => c.Type == "superAdmin")?.Value ?? principal.Identity?.Name ?? "superadmin";
+                cookieClaims.Add(new Claim("impersonatedBy", performedBy));
+
+                // add a name identifier (unique per session)
+                cookieClaims.Add(new Claim(ClaimTypes.NameIdentifier, $"impersonation-{Guid.NewGuid()}"));
+
+                var identity = new ClaimsIdentity(cookieClaims, CookieAuthenticationDefaults.AuthenticationScheme);
+                var newPrincipal = new ClaimsPrincipal(identity);
+
+                // Sign-in using cookie auth so the new tab receives the cookie
+                var props = new AuthenticationProperties
+                {
+                    IsPersistent = false,
+                    ExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(20) // short lived
+                };
+
+                await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, newPrincipal, props);
+
+                // Build redirect URL to client app
+                var clientBase = _cfg.GetValue<string>("ClientApp:BaseUrl") ?? "http://localhost:3000";
+                var redirectPath = string.IsNullOrWhiteSpace(dto.Redirect) ? "/app/dashboard" : dto.Redirect;
+                var redirectUrl = clientBase.TrimEnd('/') + (redirectPath.StartsWith('/') ? redirectPath : "/" + redirectPath);
+
+                // Return redirect url (frontend will navigate there)
+                return Ok(new { redirectUrl });
+            }
+            catch (Exception ex)
+            {
+                // do not leak sensitive details
+                return StatusCode(500, new { message = "Failed to accept impersonation." });
+            }
+        }
+        #endregion
+
+        #region Helpers (existing)
         private string GenerateJwtToken(User user, bool includeMustReset, List<string>? businessUnits = null, bool isFirstLogin = false)
         {
             var key = _cfg["Jwt:Key"];
@@ -378,8 +531,6 @@ namespace VeiraMal.API.Controllers
             return new JwtSecurityTokenHandler().WriteToken(jwt);
         }
 
-
-
         private static List<string> ParseBusinessUnits(string? dbValue)
         {
             if (string.IsNullOrWhiteSpace(dbValue)) return new List<string>();
@@ -391,5 +542,6 @@ namespace VeiraMal.API.Controllers
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
+        #endregion
     }
 }

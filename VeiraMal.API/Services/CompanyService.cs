@@ -58,6 +58,19 @@ namespace VeiraMal.API.Services
             if (string.IsNullOrWhiteSpace(dto.CompanyName))
                 throw new ArgumentException("CompanyName is required.");
 
+
+            // check if a user with this email already exists (case-insensitive)
+            var superUserEmailNormalized = dto.SuperUserEmail.Trim().ToUpperInvariant();
+            var emailExists = await _db.Users
+                .AsNoTracking()
+                .AnyAsync(u => u.Email != null && u.Email.ToUpper() == superUserEmailNormalized);
+
+            if (emailExists)
+            {
+                // Match the exact message you requested
+                throw new ArgumentException("This email already exists. Please use a different email");
+            }
+
             // Validate ABN if provided
             if (!string.IsNullOrWhiteSpace(dto.CompanyABN))
             {
@@ -318,11 +331,11 @@ namespace VeiraMal.API.Services
                             <tr>
                               <td style=""padding:14px 32px 28px 32px;font-size:13px;color:#94a3b8;"">
                                 <p style=""margin:0 0 8px 0;"">
-                                  Need help? Email us at <a href=""mailto:support@veiramal.com"" style=""color:#0b69ff;text-decoration:underline;"">support@veiramal.com</a>.
+                                  Need help? Email us at <a href=""mailto:support@hranalytix.com"" style=""color:#0b69ff;text-decoration:underline;"">support@veiramal.com</a>.
                                 </p>
 
                                 <p style=""margin:6px 0 0 0;font-size:12px;color:#94a3b8;"">
-                                  VeiraMal — {companyNameEncoded}<br/>
+                                  HrAnalytix — {companyNameEncoded}<br/>
                                   123 Business Address, Floor 2, Sector X<br/>
                                   xyz, Australia
                                 </p>
@@ -366,7 +379,8 @@ namespace VeiraMal.API.Services
                 CompanyABN = c.CompanyABN,
                 ContactNumber = c.ContactNumber,
                 Location = c.Location,     // <--- include Location
-                CreatedAt = c.CreatedAt
+                CreatedAt = c.CreatedAt,
+                LogoUrl = c.LogoUrl
             };
         }
 
@@ -407,7 +421,8 @@ namespace VeiraMal.API.Services
                 CompanyABN = company.CompanyABN,
                 ContactNumber = company.ContactNumber,
                 Location = company.Location, // <--- return it to client
-                CreatedAt = company.CreatedAt
+                CreatedAt = company.CreatedAt,
+                LogoUrl = company.LogoUrl
             };
         }
 

@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using VeiraMal.API.DTOs;
 using VeiraMal.API.Models;
@@ -23,19 +24,13 @@ namespace VeiraMal.API.Controllers
             _context = context;
         }
 
-        // Trigger calculation for a given upload batch (recommended)
-        [HttpPost("calculate/{batchId:int}")]
-        public async Task<ActionResult> Calculate(int batchId)
+        [HttpPost("calculate")]
+        public async Task<ActionResult> Calculate()
         {
-            // basic validation: check batch exists
-            var batch = await _context.UploadBatches.FindAsync(batchId);
-            if (batch == null) return NotFound($"Batch {batchId} not found.");
-
-            var result = await _liabilityService.CalculateLiabilitiesAsync(batchId);
+            var result = await _liabilityService.CalculateLiabilitiesAsync();
             return Ok(new { Message = result });
         }
 
-        // Get per-employee liability (latest calculation or by date)
         [HttpGet("employee/{employeeId:int}")]
         public async Task<ActionResult<EmployeeLiabilityDto>> GetEmployeeLiability(int employeeId, DateTime? date = null)
         {
@@ -65,17 +60,16 @@ namespace VeiraMal.API.Controllers
                 BenefitDays = rec.BenefitDays,
                 BenefitAmount = rec.BenefitAmount
             };
+
             return Ok(dto);
         }
 
-        // Top N employees by liability
         [HttpGet("top-employees")]
         public async Task<ActionResult<IEnumerable<TopEmployeeDto>>> GetTopEmployees(int limit = 50, DateTime? date = null)
         {
             DateTime calcDateStart = date?.Date ?? DateTime.UtcNow.Date;
             DateTime calcDateEnd = calcDateStart.AddDays(1);
 
-            // 1) get top employees by liability (employee ids and totals)
             var topQuery = await _context.EmployeeLiabilities
                 .AsNoTracking()
                 .Where(x => x.CalculationDate >= calcDateStart && x.CalculationDate < calcDateEnd)
@@ -87,10 +81,8 @@ namespace VeiraMal.API.Controllers
 
             if (!topQuery.Any()) return Ok(new List<TopEmployeeDto>());
 
-            // 2) get the set of employee ids we need (ignore 0)
             var employeeIds = topQuery.Select(x => x.EmployeeId).Where(id => id != 0).Distinct().ToArray();
 
-            // 3) load Headcounts rows for those employees and create a safe map:
             var headcountRows = await _context.Headcounts
                 .AsNoTracking()
                 .Where(h => employeeIds.Contains(h.PersonnelNumber))
@@ -101,7 +93,6 @@ namespace VeiraMal.API.Controllers
                 .GroupBy(h => h.PersonnelNumber)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(h => h.Id).FirstOrDefault());
 
-            // 4) build DTOs using the safe map; if no name exists, leave EmployeeName null
             var result = topQuery.Select(x =>
             {
                 string? name = null;
@@ -109,6 +100,7 @@ namespace VeiraMal.API.Controllers
                 {
                     name = (hc.FirstName + " " + hc.LastName).Trim();
                 }
+
                 return new TopEmployeeDto
                 {
                     EmployeeId = x.EmployeeId,
@@ -120,8 +112,6 @@ namespace VeiraMal.API.Controllers
             return Ok(result);
         }
 
-
-        // Top N departments by liability
         [HttpGet("top-departments")]
         public async Task<ActionResult<IEnumerable<DepartmentSummaryDto>>> GetTopDepartments(int limit = 50, DateTime? date = null)
         {
@@ -153,7 +143,6 @@ namespace VeiraMal.API.Controllers
             return Ok(dto);
         }
 
-        // Average by business unit / region
         [HttpGet("region-summary")]
         public async Task<ActionResult<IEnumerable<RegionSummaryDto>>> GetRegionSummary(DateTime? date = null)
         {
@@ -183,7 +172,6 @@ namespace VeiraMal.API.Controllers
             return Ok(dto);
         }
 
-        // Return latest available calculation date (helpful for UI)
         [HttpGet("latest-calculation")]
         public async Task<ActionResult<DateTime?>> GetLatestCalculationDate()
         {
@@ -192,29 +180,21 @@ namespace VeiraMal.API.Controllers
         }
 
         [HttpGet("tracker")]
-        public async Task<ActionResult<IEnumerable<EmployeeLiabilityFullDto>>> GetLiabilityTracker(DateTime? date = null)
+        public async Task<ActionResult<IEnumerable<EmployeeLiabilityFullDto>>> GetLiabilityTracker()
         {
-            DateTime calcDateStart = date?.Date ?? DateTime.UtcNow.Date;
-            DateTime calcDateEnd = calcDateStart.AddDays(1);
-
-            // 1) Load liabilities for the requested calculation date (range)
             var liabilities = await _context.EmployeeLiabilities
                 .AsNoTracking()
-                .Where(x => x.CalculationDate >= calcDateStart && x.CalculationDate < calcDateEnd)
                 .ToListAsync();
 
             if (!liabilities.Any()) return Ok(new List<EmployeeLiabilityFullDto>());
 
-            // 2) Get the distinct employee ids (ignore zero)
             var employeeIds = liabilities.Select(l => l.EmployeeId).Where(id => id != 0).Distinct().ToArray();
 
-            // 3) Prefetch Headcounts for those employees
             var headcountRows = await _context.Headcounts
                 .AsNoTracking()
                 .Where(h => employeeIds.Contains(h.PersonnelNumber))
                 .ToListAsync();
 
-            // Create a map: PersonnelNumber -> most recent Headcount row (by Id)
             var headcountMap = headcountRows
                 .Where(h => h.PersonnelNumber != 0)
                 .GroupBy(h => h.PersonnelNumber)
@@ -223,7 +203,6 @@ namespace VeiraMal.API.Controllers
                     g => g.OrderByDescending(h => h.Id).FirstOrDefault()
                 );
 
-            // 4) Prefetch latest LeaveBalance per employee (pick highest Id as "latest")
             var leaveBalancesRows = await _context.LeaveBalances
                 .AsNoTracking()
                 .Where(lb => employeeIds.Contains(lb.EmployeeId))
@@ -234,17 +213,17 @@ namespace VeiraMal.API.Controllers
                 .GroupBy(lb => lb.EmployeeId)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(lb => lb.Id).FirstOrDefault());
 
-            // 5) Map liabilities -> enriched DTOs
             var result = liabilities.Select(l =>
             {
                 headcountMap.TryGetValue(l.EmployeeId, out var hc);
                 leaveBalanceMap.TryGetValue(l.EmployeeId, out var lb);
 
-                var name = (hc != null) ? string.Join(" ", new[] { hc.FirstName, hc.LastName }.Where(s => !string.IsNullOrWhiteSpace(s))) : null;
+                var name = (hc != null)
+                    ? string.Join(" ", new[] { hc.FirstName, hc.LastName }.Where(s => !string.IsNullOrWhiteSpace(s)))
+                    : null;
 
                 return new EmployeeLiabilityFullDto
                 {
-                    // core
                     EmployeeId = l.EmployeeId,
                     CalculationDate = l.CalculationDate,
                     BalanceDays = l.BalanceDays,
@@ -260,12 +239,11 @@ namespace VeiraMal.API.Controllers
                     SourceUploadBatchId = l.SourceUploadBatchId,
                     CreatedAt = l.CreatedAt,
 
-                    // extras from Headcount & LeaveBalance
                     EmployeeName = name,
                     Position = hc?.PositionTitle,
-                    PayCategory = hc?.SalariedOrWaged,         // rename in DTO as PayCategory
+                    PayCategory = hc?.SalariedOrWaged,
                     OrganizationalUnit = hc?.OrganizationalUnit,
-                    Function = hc?.OrganizationalKey,          // as you requested
+                    Function = hc?.OrganizationalKey,
                     Location = hc?.Location,
                     BusinessUnit = hc?.BusinessUnit,
                     NextAnniversaryDate = lb?.ALNextAnniversary,
@@ -273,12 +251,10 @@ namespace VeiraMal.API.Controllers
                     WeeklyHours = hc?.WeeklyHours
                 };
             })
-            // optional: sort by LiabilityAmount desc so frontend gets useful order by default
             .OrderByDescending(x => x.LiabilityAmount)
             .ToList();
 
             return Ok(result);
         }
-
     }
 }

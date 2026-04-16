@@ -20,6 +20,7 @@ namespace VeiraMal.API.Properties.Controllers
         private readonly ISubCompanyResolver _subCompanyResolver;
         private readonly AppDbContext _db;
         private readonly IConfiguration _cfg;
+        private readonly IWebHostEnvironment _env;
 
         public CompanyController(
             ICompanyService companyService,
@@ -27,7 +28,8 @@ namespace VeiraMal.API.Properties.Controllers
             AppDbContext db,
             ILogger<CompanyController> logger,
              IConfiguration cfg,
-             IStripeService stripeService)
+             IStripeService stripeService,
+             IWebHostEnvironment env)
         {
             _companyService = companyService;
             _stripeService = stripeService;
@@ -35,34 +37,46 @@ namespace VeiraMal.API.Properties.Controllers
             _db = db;
             _logger = logger;
             _cfg = cfg;
+            _env = env;
         }
 
         [HttpPost("onboard")]
         public async Task<IActionResult> Onboard([FromBody] CompanyOnboardRequestDto request)
         {
-            // request contains dto + links for success/cancel/signin
             if (request == null || request.Dto == null)
                 return BadRequest("Invalid request.");
 
-            // Create company & user, but do not send email yet
-            var res = await _companyService.OnboardCompanyAsync(request.Dto, request.SignInUrl, sendEmail: false);
-
-            // Create Stripe session for the computed amount
-            var session = await _stripeService.CreateCheckoutSessionAsync(
-                res.CompanyId,
-                res.UserId,
-                res.CompanySubscriptionId,
-                res.AmountInCents,
-                request.SuccessUrl,
-                request.CancelUrl,
-                request.Currency ?? "aud"
-            );
-
-            return Ok(new
+            try
             {
-                sessionId = session.Id,
-                url = session.Url
-            });
+                // Create company & user, but do not send email yet
+                var res = await _companyService.OnboardCompanyAsync(request.Dto, request.SignInUrl, sendEmail: false);
+
+                // Create Stripe session for the computed amount
+                var session = await _stripeService.CreateCheckoutSessionAsync(
+                    res.CompanyId,
+                    res.UserId,
+                    res.CompanySubscriptionId,
+                    res.AmountInCents,
+                    request.SuccessUrl,
+                    request.CancelUrl,
+                    request.Currency ?? "aud"
+                );
+
+                return Ok(new
+                {
+                    sessionId = session.Id,
+                    url = session.Url
+                });
+            }
+            catch (ArgumentException aex)
+            {
+                return BadRequest(new { message = aex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Onboard failed");
+                return StatusCode(500, new { message = "Onboarding failed.", details = ex.Message });
+            }
         }
         [HttpPost("resend-onboarding")]
         public async Task<IActionResult> ResendOnboarding([FromBody] ResendOnboardRequest req)
@@ -335,6 +349,171 @@ namespace VeiraMal.API.Properties.Controllers
             {
                 _logger.LogError(ex, "Error fetching user company assignments");
                 return StatusCode(500, new { error = "An error occurred while fetching company assignments." });
+            }
+        }
+
+        // POST api/companies/effective/logo
+        [HttpPost("effective/logo")]
+        [Authorize]
+        public async Task<IActionResult> UploadEffectiveCompanyLogo([FromQuery] Guid? subCompanyId)
+        {
+            try
+            {
+                if (!Request.HasFormContentType)
+                    return BadRequest(new { message = "Expecting multipart/form-data with file field." });
+
+                // get caller claims
+                var baseCompanyClaim = User.Claims.FirstOrDefault(c => c.Type == "companyId")?.Value;
+                var callerUserClaim = User.Claims.FirstOrDefault(c => c.Type == "userId")?.Value;
+                if (string.IsNullOrEmpty(baseCompanyClaim) || string.IsNullOrEmpty(callerUserClaim))
+                    return Forbid();
+
+                var baseCompanyId = Guid.Parse(baseCompanyClaim);
+                var callerUserId = int.Parse(callerUserClaim);
+
+                // resolve the target company (same pattern used elsewhere)
+                var targetCompanyId = await _subCompanyResolver.ResolveTargetCompanyIdAsync(baseCompanyId, callerUserId, subCompanyId);
+
+                // permission check: ensure caller is superUser of base company
+                var caller = await _db.Users
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(u => u.UserId == callerUserId && u.CompanyId == baseCompanyId);
+
+                if (caller == null || !string.Equals(caller.AccessLevel, "superUser", StringComparison.OrdinalIgnoreCase))
+                    return Forbid();
+
+                var file = Request.Form.Files.FirstOrDefault();
+                if (file == null || file.Length == 0)
+                    return BadRequest(new { message = "File is required." });
+
+                const long MAX_BYTES = 2 * 1024 * 1024; // 2 MB
+                if (file.Length > MAX_BYTES)
+                    return BadRequest(new { message = "File too large. Max 2 MB allowed." });
+
+                var permitted = new[] { "image/jpeg", "image/jpg", "image/png", "image/webp" };
+                if (!permitted.Contains(file.ContentType?.ToLowerInvariant()))
+                    return BadRequest(new { message = "Invalid file type. Allowed: jpg, png, webp." });
+
+                // Prepare folder: wwwroot/uploads/logos/{companyId}
+                var uploadsRoot = Path.Combine(_env.WebRootPath ?? "wwwroot", "uploads", "logos", targetCompanyId.ToString());
+                if (!Directory.Exists(uploadsRoot)) Directory.CreateDirectory(uploadsRoot);
+
+                // Determine extension
+                var ext = Path.GetExtension(file.FileName);
+                if (string.IsNullOrEmpty(ext))
+                {
+                    ext = file.ContentType switch
+                    {
+                        "image/png" => ".png",
+                        "image/webp" => ".webp",
+                        _ => ".jpg"
+                    };
+                }
+
+                // Build filename and remove old files
+                var newFileName = $"logo{ext}"; // simple stable file name
+                var destPath = Path.Combine(uploadsRoot, newFileName);
+
+                // remove existing files in folder (if any)
+                var existing = Directory.EnumerateFiles(uploadsRoot, "logo.*", SearchOption.TopDirectoryOnly).ToList();
+                foreach (var e in existing)
+                {
+                    try { System.IO.File.Delete(e); } catch { /* ignore */ }
+                }
+
+                // save file
+                using (var stream = new FileStream(destPath, FileMode.Create))
+                {
+                    await file.CopyToAsync(stream);
+                }
+
+                // store public URL e.g. /uploads/logos/{companyId}/logo.png
+                var publicUrl = $"/uploads/logos/{targetCompanyId}/{newFileName}";
+
+                // update DB
+                var company = await _db.Companies.FirstOrDefaultAsync(c => c.CompanyId == targetCompanyId);
+                if (company == null) return NotFound(new { message = "Company not found." });
+
+                company.LogoUrl = publicUrl;
+                _db.Companies.Update(company);
+                await _db.SaveChangesAsync();
+
+                return Ok(new { message = "Logo uploaded.", logoUrl = publicUrl });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Forbid();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "UploadEffectiveCompanyLogo failed");
+                return StatusCode(500, new { message = "Upload failed.", details = ex.Message });
+            }
+        }
+
+        // DELETE api/companies/effective/logo
+        [HttpDelete("effective/logo")]
+        [Authorize]
+        public async Task<IActionResult> DeleteEffectiveCompanyLogo([FromQuery] Guid? subCompanyId)
+        {
+            try
+            {
+                var baseCompanyClaim = User.Claims.FirstOrDefault(c => c.Type == "companyId")?.Value;
+                var callerUserClaim = User.Claims.FirstOrDefault(c => c.Type == "userId")?.Value;
+                if (string.IsNullOrEmpty(baseCompanyClaim) || string.IsNullOrEmpty(callerUserClaim))
+                    return Forbid();
+
+                var baseCompanyId = Guid.Parse(baseCompanyClaim);
+                var callerUserId = int.Parse(callerUserClaim);
+
+                var targetCompanyId = await _subCompanyResolver.ResolveTargetCompanyIdAsync(baseCompanyId, callerUserId, subCompanyId);
+
+                var caller = await _db.Users
+                    .AsNoTracking()
+                    .FirstOrDefaultAsync(u => u.UserId == callerUserId && u.CompanyId == baseCompanyId);
+
+                if (caller == null || !string.Equals(caller.AccessLevel, "superUser", StringComparison.OrdinalIgnoreCase))
+                    return Forbid();
+
+                var company = await _db.Companies.FirstOrDefaultAsync(c => c.CompanyId == targetCompanyId);
+                if (company == null) return NotFound(new { message = "Company not found." });
+
+                if (string.IsNullOrWhiteSpace(company.LogoUrl))
+                    return BadRequest(new { message = "No logo to delete." });
+
+                // physical file removal (if exists)
+                try
+                {
+                    var relative = company.LogoUrl.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+                    var full = Path.Combine(_env.WebRootPath ?? "wwwroot", relative);
+                    if (System.IO.File.Exists(full)) System.IO.File.Delete(full);
+
+                    // Also remove folder if empty
+                    var folder = Path.GetDirectoryName(full);
+                    if (Directory.Exists(folder) && !Directory.EnumerateFileSystemEntries(folder).Any())
+                    {
+                        try { Directory.Delete(folder); } catch { /* ignore */ }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to remove logo file physically for company {CompanyId}", targetCompanyId);
+                }
+
+                company.LogoUrl = null;
+                _db.Companies.Update(company);
+                await _db.SaveChangesAsync();
+
+                return Ok(new { message = "Logo removed." });
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Forbid();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "DeleteEffectiveCompanyLogo failed");
+                return StatusCode(500, new { message = "Delete failed.", details = ex.Message });
             }
         }
     }

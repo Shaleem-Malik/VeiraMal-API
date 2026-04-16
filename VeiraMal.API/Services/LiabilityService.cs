@@ -14,18 +14,12 @@ namespace VeiraMal.API.Services
         private readonly AppDbContext _context;
         public LiabilityService(AppDbContext context) => _context = context;
 
-        public async Task<string> CalculateLiabilitiesAsync(int sourceBatchId)
+        public async Task<string> CalculateLiabilitiesAsync()
         {
-            // normalize to UTC date start (midnight UTC)
-            var todayStart = DateTime.UtcNow.Date;
-            var todayEnd = todayStart.AddDays(1);
-
-            // HEADCOUNT master (load outside transaction)
+            // Current master data only
             var employees = await _context.Headcounts.AsNoTracking().ToListAsync();
 
-            // LEAVE BALANCES - load batch, ignore EmployeeId == 0, handle duplicates (outside transaction)
             var leaveBalancesList = await _context.LeaveBalances
-                .Where(lb => lb.UploadBatchId == sourceBatchId)
                 .AsNoTracking()
                 .ToListAsync();
 
@@ -34,26 +28,28 @@ namespace VeiraMal.API.Services
                 .GroupBy(lb => lb.EmployeeId)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
 
-            // BASE RATES - safe grouping (outside transaction)
-            var baseRatesList = await _context.BaseRates.AsNoTracking().ToListAsync();
+            var baseRatesList = await _context.BaseRates
+                .AsNoTracking()
+                .ToListAsync();
+
             var baseRates = baseRatesList
                 .Where(br => br.EmployeeId != 0)
                 .GroupBy(br => br.EmployeeId)
                 .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
 
-            // FUTURE LEAVES - use same upload batch + current year + start >= todayStart (outside transaction)
+            var todayStart = DateTime.UtcNow.Date;
             var futureLeaves = await _context.LeaveTakens
-                .Where(l => l.UploadBatchId == sourceBatchId && l.StartDate >= todayStart && l.StartDate.Year == todayStart.Year)
                 .AsNoTracking()
+                .Where(l => l.StartDate >= todayStart && l.StartDate.Year == todayStart.Year)
                 .ToListAsync();
 
-            // Build liabilities list in memory (outside transaction)
             var liabilities = new List<EmployeeLiability>();
 
             foreach (var e in employees)
             {
                 int roundedBalance = 0;
-                if (leaveBalances.TryGetValue(e.PersonnelNumber, out var lb)) roundedBalance = lb.RoundedBalanceDays;
+                if (leaveBalances.TryGetValue(e.PersonnelNumber, out var lb))
+                    roundedBalance = lb.RoundedBalanceDays;
 
                 int entitlement = 20;
                 int totalLeaveBalance = roundedBalance + entitlement;
@@ -67,11 +63,9 @@ namespace VeiraMal.API.Services
                 else if (totalLeaveBalance >= 31) targetDays = totalLeaveBalance - 10;
                 else targetDays = 20;
 
-                // DaysLeft: compute decimal then ceil to int (business choice)
                 decimal daysLeftDecimal = targetDays - futureBooked;
                 int daysLeftToTake = (int)Math.Max(Math.Ceiling(daysLeftDecimal), 0m);
 
-                // DailyRate
                 decimal dailyRate = 0m;
                 if (baseRates.TryGetValue(e.PersonnelNumber, out var br))
                 {
@@ -79,15 +73,11 @@ namespace VeiraMal.API.Services
                     {
                         dailyRate = br.Rate / 5m;
                     }
-                    else // Hourly
+                    else
                     {
                         decimal weeklyHoursDecimal = TryParseDecimal(e.WeeklyHours);
                         dailyRate = br.Rate * (weeklyHoursDecimal / 5m);
                     }
-                }
-                else
-                {
-                    // optional: log or flag missing base rate for this employee
                 }
 
                 decimal liabilityAmount = dailyRate * targetDays;
@@ -97,7 +87,7 @@ namespace VeiraMal.API.Services
                 liabilities.Add(new EmployeeLiability
                 {
                     EmployeeId = e.PersonnelNumber,
-                    CalculationDate = todayStart, // normalized date-only
+                    CalculationDate = todayStart,
                     BalanceDays = roundedBalance,
                     EntitlementDays = entitlement,
                     TotalLeaveBalance = totalLeaveBalance,
@@ -108,32 +98,25 @@ namespace VeiraMal.API.Services
                     LiabilityAmount = decimal.Round(liabilityAmount, 2),
                     BenefitDays = benefitDays,
                     BenefitAmount = decimal.Round(benefitAmount, 2),
-                    SourceUploadBatchId = sourceBatchId,
+                    SourceUploadBatchId = 0,
                     CreatedAt = DateTime.UtcNow
                 });
             }
 
-            // Use EF Core's execution strategy so transaction + operations are retriable as one unit
             var strategy = _context.Database.CreateExecutionStrategy();
             await strategy.ExecuteAsync(async () =>
             {
-                // Everything inside this delegate can be retried by the strategy on transient failures.
-                // Start a transaction here.
                 using var tx = await _context.Database.BeginTransactionAsync();
                 try
                 {
-                    // Fetch & remove existing liabilities for the date range (we fetch inside the delegate to ensure consistency on retry)
-                    var toRemove = await _context.EmployeeLiabilities
-                        .Where(x => x.CalculationDate >= todayStart && x.CalculationDate < todayEnd)
-                        .ToListAsync();
-
-                    if (toRemove.Any())
+                    // FULL REPLACE: remove all old liability rows
+                    var existing = await _context.EmployeeLiabilities.ToListAsync();
+                    if (existing.Any())
                     {
-                        _context.EmployeeLiabilities.RemoveRange(toRemove);
+                        _context.EmployeeLiabilities.RemoveRange(existing);
                         await _context.SaveChangesAsync();
                     }
 
-                    // Bulk insert new liabilities (if any)
                     if (liabilities.Any())
                     {
                         await _context.EmployeeLiabilities.AddRangeAsync(liabilities);
@@ -144,15 +127,13 @@ namespace VeiraMal.API.Services
                 }
                 catch
                 {
-                    // on any exception roll back and rethrow to allow the execution strategy to retry if applicable
                     await tx.RollbackAsync();
                     throw;
                 }
             });
 
-            return $"Calculated liabilities for {liabilities.Count} employees (batch {sourceBatchId}).";
+            return $"Calculated liabilities for {liabilities.Count} employees.";
         }
-
 
         private decimal TryParseDecimal(string? s)
         {

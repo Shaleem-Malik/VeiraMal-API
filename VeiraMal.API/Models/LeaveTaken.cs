@@ -1,5 +1,4 @@
 ﻿using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
 
 namespace VeiraMal.API.Models
 {
@@ -7,11 +6,6 @@ namespace VeiraMal.API.Models
     {
         [Key]
         public int Id { get; set; }
-
-        // Reference to upload
-        public int UploadBatchId { get; set; }
-        [ForeignKey(nameof(UploadBatchId))]
-        public UploadBatch? UploadBatch { get; set; }
 
         public int PersonnelNumber { get; set; }          // Employee id (matches Headcount.PersonnelNumber)
         public string? PersonnelName { get; set; }

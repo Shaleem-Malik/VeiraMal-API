@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using VeiraMal.API;
 
@@ -11,9 +12,11 @@ using VeiraMal.API;
 namespace VeiraMal.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260319163625_RemoveBatchfromLeaveTaken")]
+    partial class RemoveBatchfromLeaveTaken
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -465,7 +468,12 @@ namespace VeiraMal.API.Migrations
                     b.Property<int>("RoundedBalanceDays")
                         .HasColumnType("int");
 
+                    b.Property<int>("UploadBatchId")
+                        .HasColumnType("int");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("UploadBatchId");
 
                     b.ToTable("LeaveBalances");
                 });
@@ -1048,6 +1056,17 @@ namespace VeiraMal.API.Migrations
                     b.Navigation("Company");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("VeiraMal.API.Models.LeaveBalance", b =>
+                {
+                    b.HasOne("VeiraMal.API.Models.UploadBatch", "UploadBatch")
+                        .WithMany()
+                        .HasForeignKey("UploadBatchId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("UploadBatch");
                 });
 
             modelBuilder.Entity("VeiraMal.API.Models.Company", b =>

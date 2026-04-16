@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.FileProviders;
@@ -11,6 +12,9 @@ using VeiraMal.API;
 using VeiraMal.API.Models;
 using VeiraMal.API.Services;
 using VeiraMal.API.Services.Interfaces;
+using Microsoft.AspNetCore.Http;
+using System.Linq;
+using System.Collections.Generic;
 
 ExcelPackage.License.SetNonCommercialPersonal("Your Name");
 
@@ -63,15 +67,8 @@ builder.Services.AddScoped<IStripeService, StripeService>();
 builder.Services.AddScoped<PasswordValidator>();
 
 StripeConfiguration.ApiKey = builder.Configuration["Stripe:SecretKey"];
-builder.Services.AddControllers();
 
-// --------------------- JWT Configuration ---------------------
-var jwtSettings = builder.Configuration.GetSection("Jwt");
-var jwtKey = jwtSettings["Key"] ?? throw new Exception("JWT Key is missing");
-var issuer = jwtSettings["Issuer"] ?? throw new Exception("Issuer is missing");
-var audience = jwtSettings["Audience"] ?? throw new Exception("Audience is missing");
-
-// --------------------- Core Services ---------------------
+// --------------------- Controllers / Swagger ---------------------
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
@@ -90,65 +87,94 @@ builder.Services.AddDbContext<AppDbContext>(options =>
         }
     ));
 
-// --------------------- JWT Authentication ---------------------
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.RequireHttpsMetadata = false;
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = issuer,
-            ValidAudience = audience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
-            ClockSkew = TimeSpan.FromMinutes(1)
-        };
+// --------------------- JWT Configuration ---------------------
+var jwtSettings = builder.Configuration.GetSection("Jwt");
+var jwtKey = jwtSettings["Key"] ?? throw new Exception("JWT Key is missing");
+var issuer = jwtSettings["Issuer"] ?? throw new Exception("Issuer is missing");
+var audience = jwtSettings["Audience"] ?? throw new Exception("Audience is missing");
 
-        options.Events = new JwtBearerEvents
+// --------------------- Authentication: Cookies + JWT Bearer ---------------------
+// We'll register both cookie auth (used for impersonation sign-in) and JWT bearer (used for API auth).
+builder.Services.AddAuthentication(options =>
+{
+    // Keep JWT as the default authenticate/challenge scheme for API endpoints
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+
+    // Use cookie scheme for sign-in actions (SignInAsync will use this scheme)
+    options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+})
+.AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
+{
+    options.Cookie.Name = "veiramal_auth";
+    options.Cookie.HttpOnly = true;
+
+    // DEV ONLY: allow insecure cookies on localhost for development.
+    // In production: set SameSite=None and SecurePolicy = Always and ensure HTTPS.
+    options.Cookie.SameSite = SameSiteMode.None;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.None;
+    options.ExpireTimeSpan = TimeSpan.FromMinutes(30);
+})
+.AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
+{
+    options.RequireHttpsMetadata = false;
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = issuer,
+        ValidAudience = audience,
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey)),
+        ClockSkew = TimeSpan.FromMinutes(1)
+    };
+
+    options.Events = new JwtBearerEvents
+    {
+        OnTokenValidated = async context =>
         {
-            OnTokenValidated = async context =>
+            try
             {
-                try
+                var jti = context.Principal?.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
+                if (!string.IsNullOrWhiteSpace(jti))
                 {
-                    var jti = context.Principal?.FindFirst(JwtRegisteredClaimNames.Jti)?.Value;
-                    if (!string.IsNullOrWhiteSpace(jti))
+                    var blacklist = context.HttpContext.RequestServices.GetRequiredService<ITokenBlacklistService>();
+                    var revoked = await blacklist.IsTokenRevokedAsync(jti);
+                    if (revoked)
                     {
-                        var blacklist = context.HttpContext.RequestServices.GetRequiredService<ITokenBlacklistService>();
-                        var revoked = await blacklist.IsTokenRevokedAsync(jti);
-                        if (revoked)
-                        {
-                            context.Fail("Token revoked.");
-                            return;
-                        }
+                        context.Fail("Token revoked.");
+                        return;
                     }
                 }
-                catch (Exception ex)
-                {
-                    context.Fail("Token validation failed: " + ex.Message);
-                }
-            },
-            OnAuthenticationFailed = context =>
-            {
-#if DEBUG
-                var logger = context.HttpContext.RequestServices.GetService<ILogger<Program>>();
-                logger?.LogWarning("Authentication failed: {Message}", context.Exception?.Message);
-#endif
-                return Task.CompletedTask;
             }
-        };
-    });
+            catch (Exception ex)
+            {
+                context.Fail("Token validation failed: " + ex.Message);
+            }
+        },
+        OnAuthenticationFailed = context =>
+        {
+#if DEBUG
+            var logger = context.HttpContext.RequestServices.GetService<ILogger<Program>>();
+            logger?.LogWarning("Authentication failed: {Message}", context.Exception?.Message);
+#endif
+            return Task.CompletedTask;
+        }
+    };
+});
 
 // --------------------- CORS ---------------------
+// IMPORTANT: AllowCredentials() is required when the client uses withCredentials
+// and the server will set cookies. Use a specific origin (no wildcard) when allowing credentials.
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowLocalhost3000", policy =>
     {
         policy.WithOrigins("http://localhost:3000")
               .AllowAnyHeader()
-              .AllowAnyMethod();
+              .AllowAnyMethod()
+              .AllowCredentials(); // <--- critical for cookie flow
     });
 });
 
@@ -178,33 +204,32 @@ app.UseStaticFiles(new StaticFileOptions
     }
 });
 
-
-// ===== DATABASE DIAGNOSTICS =====
+// ===== DATABASE DIAGNOSTICS & SEEDING =====
 using (var scope = app.Services.CreateScope())
 {
     var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-    
+
     logger.LogInformation("🔍 STARTING DATABASE DIAGNOSTICS");
-    
+
     try
     {
         var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        
+
         // Test Connection
         logger.LogInformation("Testing database connection...");
         var canConnect = await context.Database.CanConnectAsync();
-        
+
         if (canConnect)
         {
             logger.LogInformation("✅ DATABASE CONNECTION: SUCCESS");
-            
+
             // Check Migrations
             var appliedMigrations = await context.Database.GetAppliedMigrationsAsync();
             var pendingMigrations = await context.Database.GetPendingMigrationsAsync();
-            
+
             logger.LogInformation("Applied migrations: {Count}", appliedMigrations.Count());
             logger.LogInformation("Pending migrations: {Count}", pendingMigrations.Count());
-            
+
             // Apply Pending Migrations
             if (pendingMigrations.Any())
             {
@@ -216,7 +241,7 @@ using (var scope = app.Services.CreateScope())
             {
                 logger.LogInformation("✅ DATABASE IS UP TO DATE");
             }
-            
+
             // List Tables (Optional)
             try
             {
@@ -232,6 +257,108 @@ using (var scope = app.Services.CreateScope())
             {
                 logger.LogWarning("Could not list tables: {Message}", tableEx.Message);
             }
+
+            // ------------------- SuperAdmin seeding -------------------
+            try
+            {
+                // Only seed if no user with AccessLevel 'superAdmin' exists
+                var hasSuperAdmin = await context.Users.AnyAsync(u => u.AccessLevel != null && u.AccessLevel.ToLower() == "superadmin");
+                if (!hasSuperAdmin)
+                {
+                    logger.LogInformation("No superAdmin found. Creating default company + superAdmin user...");
+
+                    // Read optional seed settings from configuration (appsettings.json)
+                    var cfg = scope.ServiceProvider.GetRequiredService<IConfiguration>();
+                    var seedEmail = cfg["Seed:SuperAdminEmail"] ?? "admin@hranalytix.local";
+                    var seedFirstName = cfg["Seed:SuperAdminFirstName"] ?? "Super";
+                    var seedLastName = cfg["Seed:SuperAdminLastName"] ?? "Admin";
+                    var seedCompanyName = cfg["Seed:CompanyName"] ?? "VeiraMal Admin";
+
+                    // Create company
+                    var company = new Company
+                    {
+                        CompanyId = Guid.NewGuid(),
+                        CompanyName = seedCompanyName,
+                        CompanyABN = null,
+                        ContactNumber = null,
+                        Location = null,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    await context.Companies.AddAsync(company);
+                    await context.SaveChangesAsync(); // ensure company persisted for FK
+
+                    // Build user with AccessLevel = "superAdmin"
+                    var user = new User
+                    {
+                        CompanyId = company.CompanyId,
+                        EmployeeNumber = 1,
+                        FirstName = seedFirstName,
+                        LastName = seedLastName,
+                        Email = seedEmail,
+                        BusinessUnit = "Management",
+                        AccessLevel = "superAdmin", // IMPORTANT: superAdmin (not superUser)
+                        IsPasswordResetRequired = true,
+                        IsActive = true,
+                        IsFirstLogin = true,
+                        ContactNumber = null,
+                        Location = null,
+                        CreatedAt = DateTime.UtcNow
+                    };
+
+                    // use IUserService to generate password and hash
+                    var userService = scope.ServiceProvider.GetRequiredService<IUserService>();
+                    var tempPassword = await userService.GenerateTemporaryPasswordAsync();
+                    await userService.SetPasswordHashAsync(user, tempPassword);
+
+                    // add user and save
+                    await context.Users.AddAsync(user);
+                    await context.SaveChangesAsync();
+
+                    // Try to send email with temp password
+                    var emailService = scope.ServiceProvider.GetService<IEmailService>();
+                    if (emailService != null)
+                    {
+                        try
+                        {
+                            var subject = "Your SuperAdmin account for " + seedCompanyName;
+                            var signinLink = cfg["ClientApp:BaseUrl"] ?? "http://localhost:3000";
+                            var body = $@"
+                                <div style='font-family: Arial, sans-serif;max-width:600px;margin:0 auto;padding:16px;'>
+                                    <h3>Welcome {System.Net.WebUtility.HtmlEncode(seedFirstName)}</h3>
+                                    <p>Your SuperAdmin account has been created for <strong>{System.Net.WebUtility.HtmlEncode(seedCompanyName)}</strong>.</p>
+                                    <p><strong>Email:</strong> {System.Net.WebUtility.HtmlEncode(seedEmail)}</p>
+                                    <p><strong>Temporary password:</strong> <code style='font-family:monospace;background:#f4f4f4;padding:6px;border-radius:4px;'>{System.Net.WebUtility.HtmlEncode(tempPassword)}</code></p>
+                                    <p>Please sign in and change your password immediately.</p>
+                                    <p>Sign in: <a href='{signinLink}'>{signinLink}</a></p>
+                                </div>";
+                            await emailService.SendEmailAsync(seedEmail, subject, body);
+                            logger.LogInformation("Seed SuperAdmin email sent to {Email}", seedEmail);
+                        }
+                        catch (Exception emailEx)
+                        {
+                            logger.LogWarning(emailEx, "Failed to send seed SuperAdmin email. Temporary password will be printed in logs.");
+                            logger.LogWarning("Seed SuperAdmin temp password for {Email}: {Temp}", seedEmail, tempPassword);
+                        }
+                    }
+                    else
+                    {
+                        // No email service registered — print to logs (dev only)
+                        logger.LogWarning("IEmailService not available; printing seed SuperAdmin temporary password to logs (dev only).");
+                        logger.LogWarning("Seed SuperAdmin temp password for {Email}: {Temp}", seedEmail, tempPassword);
+                    }
+
+                    logger.LogInformation("✅ Default company and superAdmin user created. Email: {Email}", seedEmail);
+                }
+                else
+                {
+                    logger.LogInformation("SuperAdmin user already exists; skipping seeding.");
+                }
+            }
+            catch (Exception seedEx)
+            {
+                logger.LogError(seedEx, "Failed to seed default superAdmin/company.");
+            }
+            // ---------------------------------------------------------
         }
         else
         {
@@ -246,12 +373,12 @@ using (var scope = app.Services.CreateScope())
     {
         logger.LogError(ex, "💥 DATABASE DIAGNOSTICS FAILED");
         logger.LogError("Error: {Message}", ex.Message);
-        
+
         if (ex.InnerException != null)
         {
             logger.LogError("Inner Error: {InnerMessage}", ex.InnerException.Message);
         }
-        
+
         // Specific error guidance
         if (ex.Message.Contains("Login failed", StringComparison.OrdinalIgnoreCase))
         {
@@ -266,7 +393,7 @@ using (var scope = app.Services.CreateScope())
             logger.LogError("🔥 SOLUTION: Enable 'Allow Azure services' in SQL Server firewall");
         }
     }
-    
+
     logger.LogInformation("🏁 DATABASE DIAGNOSTICS COMPLETE");
     logger.LogInformation("🎯 APPLICATION STARTED SUCCESSFULLY");
 }
@@ -279,9 +406,13 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseRouting();
+
+// IMPORTANT: CORS must be enabled BEFORE authentication so preflight responses contain required headers
 app.UseCors("AllowLocalhost3000");
+
 app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();

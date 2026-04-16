@@ -13,5 +13,6 @@ namespace VeiraMal.API.DTOs
         public string? Location { get; set; }
 
         public DateTime CreatedAt { get; set; }
+        public string? LogoUrl { get; set; }
     }
 }

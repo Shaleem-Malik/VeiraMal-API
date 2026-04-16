@@ -2,6 +2,6 @@
 {
     public interface ILiabilityService
     {
-        Task<string> CalculateLiabilitiesAsync(int sourceBatchId);
+        Task<string> CalculateLiabilitiesAsync();
     }
 }

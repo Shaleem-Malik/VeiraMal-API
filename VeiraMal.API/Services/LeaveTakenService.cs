@@ -14,20 +14,19 @@ namespace VeiraMal.API.Services
 
         public async Task<string> UploadAsync(IFormFile file)
         {
-            var batch = new UploadBatch { CreatedAt = DateTime.UtcNow, FilesMeta = file.FileName };
-            _context.UploadBatches.Add(batch);
+            var list = await ParseLeaveTakenAsync(file);
+
+            // Replace existing data completely
+            _context.LeaveTakens.RemoveRange(_context.LeaveTakens);
             await _context.SaveChangesAsync();
 
-            var list = await ParseLeaveTakenAsync(file, batch.Id);
-
-            // Option: remove existing rows for the batch or add. Here we add rows for this batch.
             await _context.LeaveTakens.AddRangeAsync(list);
             await _context.SaveChangesAsync();
 
-            return $"{list.Count} LeaveTaken records uploaded in batch {batch.Id}";
+            return $"{list.Count} LeaveTaken records uploaded (old data replaced).";
         }
 
-        private async Task<List<LeaveTaken>> ParseLeaveTakenAsync(IFormFile file, int batchId)
+        private async Task<List<LeaveTaken>> ParseLeaveTakenAsync(IFormFile file)
         {
             var list = new List<LeaveTaken>();
             using var stream = new MemoryStream();
@@ -36,20 +35,19 @@ namespace VeiraMal.API.Services
 
             if (IsCsv(file))
             {
-                // Simple CSV parse - robust for quoted commas. Use CsvHelper if available by preference.
                 using var sr = new StreamReader(stream);
-                string headerLine = await sr.ReadLineAsync();
-                var headers = SplitCsvLine(headerLine);
+                string? headerLine = await sr.ReadLineAsync();
+                var headers = SplitCsvLine(headerLine ?? string.Empty);
 
                 string? line;
                 while ((line = await sr.ReadLineAsync()) != null)
                 {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+
                     var cols = SplitCsvLine(line);
-                    // Map by column index based on your sample CSV
-                    // Sample header example: Pers.no.,Personnel Number,Position,Personnel Subarea,Personnel Area,Function,Manager,Cost ctr,Cost Center,Organizational Unit,Empl. %,Wk.hrs.,A/AType,Attendance or Absence Type,Hrs,Days,Start,End,Chngd on,Location,Month,Employment Type,Business Unit
+
                     var lt = new LeaveTaken
                     {
-                        UploadBatchId = batchId,
                         PersonnelNumber = SafeInt(cols, 0),
                         PersonnelName = SafeString(cols, 1),
                         Position = SafeString(cols, 2),
@@ -73,6 +71,7 @@ namespace VeiraMal.API.Services
                         EmploymentType = SafeString(cols, 21),
                         BusinessUnit = SafeString(cols, 22)
                     };
+
                     list.Add(lt);
                 }
             }
@@ -81,12 +80,11 @@ namespace VeiraMal.API.Services
                 using var package = new ExcelPackage(stream);
                 var ws = package.Workbook.Worksheets[0];
                 int rowCount = ws.Dimension?.Rows ?? 0;
-                // find header row columns mapping if needed, but assume fixed columns like your Headcount
+
                 for (int row = 2; row <= rowCount; row++)
                 {
                     var lt = new LeaveTaken
                     {
-                        UploadBatchId = batchId,
                         PersonnelNumber = GetIntValue(ws.Cells[row, 1]),
                         PersonnelName = GetStringValue(ws.Cells[row, 2]),
                         Position = GetStringValue(ws.Cells[row, 3]),
@@ -110,51 +108,80 @@ namespace VeiraMal.API.Services
                         EmploymentType = GetStringValue(ws.Cells[row, 22]),
                         BusinessUnit = GetStringValue(ws.Cells[row, 23])
                     };
+
                     list.Add(lt);
                 }
             }
+
             return list;
         }
 
-        // -- Helpers (similar to HeadcountService helpers) --
-        private bool IsCsv(IFormFile file) => file.FileName.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) || file.ContentType.Contains("csv");
+        private bool IsCsv(IFormFile file) =>
+            file.FileName.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) ||
+            (file.ContentType?.Contains("csv", StringComparison.OrdinalIgnoreCase) ?? false);
 
         private static List<string> SplitCsvLine(string line)
         {
             var result = new List<string>();
             bool inQuotes = false;
             var cur = new System.Text.StringBuilder();
+
             for (int i = 0; i < line.Length; i++)
             {
                 char c = line[i];
-                if (c == '"') { inQuotes = !inQuotes; continue; }
-                if (c == ',' && !inQuotes) { result.Add(cur.ToString()); cur.Clear(); continue; }
+                if (c == '"')
+                {
+                    inQuotes = !inQuotes;
+                    continue;
+                }
+
+                if (c == ',' && !inQuotes)
+                {
+                    result.Add(cur.ToString());
+                    cur.Clear();
+                    continue;
+                }
+
                 cur.Append(c);
             }
+
             result.Add(cur.ToString());
             return result;
         }
 
-        private static string SafeString(List<string> cols, int idx) => (idx < cols.Count) ? cols[idx].Trim() : string.Empty;
-        private static int SafeInt(List<string> cols, int idx) => int.TryParse(SafeString(cols, idx), out var v) ? v : 0;
-        private static decimal SafeDecimal(List<string> cols, int idx) => decimal.TryParse(SafeString(cols, idx), NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d :
-                                                                     decimal.TryParse(SafeString(cols, idx), out d) ? d : 0m;
-        private static string SafeDecimalString(List<string> cols, int idx) => SafeString(cols, idx);
+        private static string SafeString(List<string> cols, int idx) =>
+            (idx >= 0 && idx < cols.Count) ? cols[idx].Trim() : string.Empty;
+
+        private static int SafeInt(List<string> cols, int idx) =>
+            int.TryParse(SafeString(cols, idx), out var v) ? v : 0;
+
+        private static decimal SafeDecimal(List<string> cols, int idx) =>
+            decimal.TryParse(SafeString(cols, idx), NumberStyles.Any, CultureInfo.InvariantCulture, out var d)
+                ? d
+                : decimal.TryParse(SafeString(cols, idx), out d)
+                    ? d
+                    : 0m;
+
         private static DateTime SafeParseDate(List<string> cols, int idx)
         {
             var s = SafeString(cols, idx);
             if (DateTime.TryParse(s, out var d)) return d;
-            if (double.TryParse(s, out var oaDate)) // maybe Excel serial passed into CSV
-                return DateTime.FromOADate(oaDate);
+            if (double.TryParse(s, out var oaDate)) return DateTime.FromOADate(oaDate);
             return DateTime.MinValue;
         }
 
-        // EPPlus helpers copied/adapted
         private string? GetStringValue(ExcelRange cell) => cell.Value?.ToString()?.Trim();
-        private int GetIntValue(ExcelRange cell) => int.TryParse(cell.Value?.ToString(), out int r) ? r : 0;
+
+        private int GetIntValue(ExcelRange cell) =>
+            int.TryParse(cell.Value?.ToString(), out int r) ? r : 0;
+
         private DateTime GetDateTimeValue(ExcelRange cell) =>
-            cell.Value is DateTime dt ? dt :
-            DateTime.TryParse(cell.Value?.ToString(), out var parsed) ? parsed : DateTime.MinValue;
+            cell.Value is DateTime dt
+                ? dt
+                : DateTime.TryParse(cell.Value?.ToString(), out var parsed)
+                    ? parsed
+                    : DateTime.MinValue;
+
         private decimal GetDecimalFromString(string? s)
         {
             if (string.IsNullOrWhiteSpace(s)) return 0m;

@@ -20,6 +20,8 @@ namespace VeiraMal.API.Models
 
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
+        public string? LogoUrl { get; set; }
+
         // Navigation properties
         public Company? ParentCompany { get; set; }
         public ICollection<Company>? ChildCompanies { get; set; }

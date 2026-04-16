@@ -1,6 +1,6 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using VeiraMal.API.Services.Interfaces;
 using VeiraMal.API.DTOs;
+using VeiraMal.API.Services.Interfaces;
 
 namespace VeiraMal.API.Controllers
 {
@@ -19,6 +19,7 @@ namespace VeiraMal.API.Controllers
         public async Task<ActionResult<UploadResultDto>> Upload(IFormFile file)
         {
             if (file == null) return BadRequest("No file provided.");
+
             var message = await _service.UploadAsync(file);
             return Ok(new UploadResultDto { Message = message });
         }
