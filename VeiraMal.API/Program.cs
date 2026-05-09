@@ -62,6 +62,10 @@ builder.Services.AddScoped<ILiabilityService, LiabilityService>();
 
 builder.Services.AddDataProtection();
 builder.Services.AddScoped<IStripeService, StripeService>();
+builder.Services.Configure<AbnLookupOptions>(
+    builder.Configuration.GetSection("AbnLookup"));
+
+builder.Services.AddHttpClient<IAbnLookupService, AbnLookupService>();
 
 // Register PasswordValidator as a service
 builder.Services.AddScoped<PasswordValidator>();

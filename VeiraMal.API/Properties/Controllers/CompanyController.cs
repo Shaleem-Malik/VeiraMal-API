@@ -21,6 +21,7 @@ namespace VeiraMal.API.Properties.Controllers
         private readonly AppDbContext _db;
         private readonly IConfiguration _cfg;
         private readonly IWebHostEnvironment _env;
+        private readonly IAbnLookupService _abnLookupService;
 
         public CompanyController(
             ICompanyService companyService,
@@ -29,7 +30,8 @@ namespace VeiraMal.API.Properties.Controllers
             ILogger<CompanyController> logger,
              IConfiguration cfg,
              IStripeService stripeService,
-             IWebHostEnvironment env)
+             IWebHostEnvironment env,
+             IAbnLookupService abnLookupService)
         {
             _companyService = companyService;
             _stripeService = stripeService;
@@ -38,18 +40,46 @@ namespace VeiraMal.API.Properties.Controllers
             _logger = logger;
             _cfg = cfg;
             _env = env;
+            _abnLookupService = abnLookupService;
         }
 
         [HttpPost("onboard")]
         public async Task<IActionResult> Onboard([FromBody] CompanyOnboardRequestDto request)
         {
             if (request == null || request.Dto == null)
-                return BadRequest("Invalid request.");
+                return BadRequest(new { message = "Invalid request." });
 
             try
             {
+                var abn = request.Dto.CompanyABN?.Trim();
+
+                if (string.IsNullOrWhiteSpace(abn))
+                {
+                    return BadRequest(new
+                    {
+                        message = "Company ABN is required and must be validated before signup."
+                    });
+                }
+
+                var abnResult = await _abnLookupService.ValidateAbnAsync(abn);
+
+                if (!abnResult.IsValid)
+                {
+                    return BadRequest(new
+                    {
+                        message = "Signup blocked because ABN is not valid.",
+                        abnError = abnResult.Message
+                    });
+                }
+
+                // Optional: overwrite with cleaned ABN digits only
+                request.Dto.CompanyABN = abnResult.Abn ?? abn;
+
                 // Create company & user, but do not send email yet
-                var res = await _companyService.OnboardCompanyAsync(request.Dto, request.SignInUrl, sendEmail: false);
+                var res = await _companyService.OnboardCompanyAsync(
+                    request.Dto,
+                    request.SignInUrl,
+                    sendEmail: false);
 
                 // Create Stripe session for the computed amount
                 var session = await _stripeService.CreateCheckoutSessionAsync(
