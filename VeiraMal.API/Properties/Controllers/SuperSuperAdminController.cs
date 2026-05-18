@@ -1,16 +1,17 @@
-﻿using System;
+﻿using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.Tokens;
+using System;
+using System.Collections.Generic;
 using System.IdentityModel.Tokens.Jwt;
 using System.Linq;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Tokens;
 using VeiraMal.API;
+using VeiraMal.API.Models;
 using VeiraMal.API.Services.Interfaces;
 
 namespace VeiraMal.API.Controllers
@@ -25,7 +26,6 @@ namespace VeiraMal.API.Controllers
     /// </summary>
     [ApiController]
     [Route("api")]
-    //[Authorize(Policy = "SuperAdminOnly")] // ensure you have registered this policy or replace with Roles = "SuperAdmin"
     public class SuperSuperAdminController : ControllerBase
     {
         private readonly AppDbContext _db;
@@ -33,7 +33,7 @@ namespace VeiraMal.API.Controllers
         private readonly IUserService _userService;
         private readonly IEmailService _email;
         private readonly IConfiguration _cfg;
-        private readonly ILogger<SuperAdminController> _logger;
+        private readonly ILogger<SuperSuperAdminController> _logger;
 
         public SuperSuperAdminController(
             AppDbContext db,
@@ -41,7 +41,7 @@ namespace VeiraMal.API.Controllers
             IUserService userService,
             IEmailService email,
             IConfiguration cfg,
-            ILogger<SuperAdminController> logger)
+            ILogger<SuperSuperAdminController> logger)
         {
             _db = db;
             _userMgmt = userMgmt;
@@ -65,14 +65,15 @@ namespace VeiraMal.API.Controllers
         public class ImpersonationRequestDto
         {
             public Guid CompanyId { get; set; }
-            public int? UserId { get; set; } // optional: impersonate a specific user
-            public int ExpiresMinutes { get; set; } = 5; // short by default
-            public string? RedirectPath { get; set; } // optional path to redirect to after impersonation
+            public int? UserId { get; set; }
+            public int ExpiresMinutes { get; set; } = 5;
+            public string? RedirectPath { get; set; }
         }
 
         public class ImpersonationResultDto
         {
             public string ImpersonationUrl { get; set; } = default!;
+            public string Token { get; set; } = default!;
             public DateTime ExpiresAt { get; set; }
         }
         #endregion
@@ -103,15 +104,13 @@ namespace VeiraMal.API.Controllers
 
         /// <summary>
         /// GET /api/admin/companies/{companyId}/users
-        /// Returns users for the specified company (uses existing service).
+        /// Returns users for the specified company.
         /// </summary>
         [HttpGet("admin/companies/{companyId:guid}/users")]
         public async Task<IActionResult> ListCompanyUsers([FromRoute] Guid companyId)
         {
-            // Reuse UserManagementService.ListUsersAsync which already handles parent/subcompany logic
             var users = await _userMgmt.ListUsersAsync(companyId);
 
-            // Map to a minimal public DTO to avoid returning internal fields
             var result = users.Select(u => new
             {
                 userId = u.UserId,
@@ -124,8 +123,11 @@ namespace VeiraMal.API.Controllers
                 isActive = u.IsActive,
                 contactNumber = u.ContactNumber,
                 location = u.Location,
+                businessUnit = u.BusinessUnit,
                 createdAt = u.CreatedAt
-            }).OrderBy(u => u.employeeNumber).ToList();
+            })
+            .OrderBy(u => u.employeeNumber)
+            .ToList();
 
             return Ok(result);
         }
@@ -138,13 +140,18 @@ namespace VeiraMal.API.Controllers
         public async Task<IActionResult> ToggleUserActive([FromRoute] Guid companyId, [FromRoute] int userId)
         {
             var user = await _db.Users.FirstOrDefaultAsync(u => u.CompanyId == companyId && u.UserId == userId);
-            if (user == null) return NotFound(new { message = "User not found for this company." });
+            if (user == null)
+                return NotFound(new { message = "User not found for this company." });
 
             user.IsActive = !user.IsActive;
             await _db.SaveChangesAsync();
 
-            _logger.LogInformation("SuperAdmin {sa} toggled user {userId} for company {companyId} -> active={active}",
-                User.Identity?.Name ?? "unknown", userId, companyId, user.IsActive);
+            _logger.LogInformation(
+                "SuperAdmin {sa} toggled user {userId} for company {companyId} -> active={active}",
+                User.Identity?.Name ?? "unknown",
+                userId,
+                companyId,
+                user.IsActive);
 
             return Ok(new { userId = user.UserId, isActive = user.IsActive });
         }
@@ -157,7 +164,8 @@ namespace VeiraMal.API.Controllers
         public async Task<IActionResult> ResetUserPassword([FromRoute] Guid companyId, [FromRoute] int userId)
         {
             var user = await _db.Users.FirstOrDefaultAsync(u => u.CompanyId == companyId && u.UserId == userId);
-            if (user == null) return NotFound(new { message = "User not found for this company." });
+            if (user == null)
+                return NotFound(new { message = "User not found for this company." });
 
             try
             {
@@ -168,7 +176,6 @@ namespace VeiraMal.API.Controllers
                 user.IsFirstLogin = true;
                 await _db.SaveChangesAsync();
 
-                // Send email (basic template). You can replace with a nicer template or call an existing service method.
                 var subject = "Password reset — temporary password";
                 var html = $@"
                     <div style='font-family: Arial, sans-serif; max-width:600px; margin:0 auto;'>
@@ -182,8 +189,11 @@ namespace VeiraMal.API.Controllers
 
                 await _email.SendEmailAsync(user.Email, subject, html);
 
-                _logger.LogInformation("SuperAdmin {sa} reset password for user {userId} company {companyId}",
-                    User.Identity?.Name ?? "unknown", userId, companyId);
+                _logger.LogInformation(
+                    "SuperAdmin {sa} reset password for user {userId} company {companyId}",
+                    User.Identity?.Name ?? "unknown",
+                    userId,
+                    companyId);
 
                 return Ok(new { userId = user.UserId, message = "Password reset and email sent." });
             }
@@ -197,50 +207,80 @@ namespace VeiraMal.API.Controllers
         /// <summary>
         /// POST /api/superadmin/impersonate
         /// Request body: { companyId, userId? }
-        /// Returns a short-lived impersonationUrl which the frontend should open in NEW TAB.
-        /// Implementation: create short-lived JWT with impersonation claims and return URL that points back to the app which will validate token.
-        /// Security: token expiry should be small (5 minutes), and the impersonation endpoint on the client must validate token server-side and set tenant cookie/session.
+        /// Returns impersonationUrl + raw token.
         /// </summary>
         [HttpPost("superadmin/impersonate")]
         public async Task<IActionResult> Impersonate([FromBody] ImpersonationRequestDto req)
         {
-            if (req == null || req.CompanyId == Guid.Empty) return BadRequest(new { message = "companyId is required." });
+            if (req == null || req.CompanyId == Guid.Empty)
+                return BadRequest(new { message = "companyId is required." });
 
-            // Basic check company exists
-            var company = await _db.Companies.AsNoTracking().FirstOrDefaultAsync(c => c.CompanyId == req.CompanyId);
-            if (company == null) return NotFound(new { message = "Company not found." });
+            var company = await _db.Companies.AsNoTracking()
+                .FirstOrDefaultAsync(c => c.CompanyId == req.CompanyId);
 
-            // If userId supplied, validate the user belongs to that company (or parent/sub rules as required)
+            if (company == null)
+                return NotFound(new { message = "Company not found." });
+
+            User? targetUser = null;
+
             if (req.UserId.HasValue)
             {
-                var u = await _db.Users.AsNoTracking().FirstOrDefaultAsync(x => x.UserId == req.UserId.Value);
-                if (u == null) return NotFound(new { message = "User not found." });
+                targetUser = await _db.Users.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.UserId == req.UserId.Value);
 
-                // allow impersonation of parent users assigned to subcompany? For safety, check that the user is either in the target company or is assigned to that subcompany (mimic ListUsersAsync logic).
-                var allowed = (u.CompanyId == req.CompanyId) || (u.CompanyId == company.ParentCompanyId && await _db.CompanySuperUserAssignments.AnyAsync(a => a.CompanyId == req.CompanyId && a.UserId == u.UserId));
-                if (!allowed) return BadRequest(new { message = "User cannot be impersonated for the given company." });
+                if (targetUser == null)
+                    return NotFound(new { message = "User not found." });
+
+                var allowed =
+                    targetUser.CompanyId == req.CompanyId ||
+                    (company.ParentCompanyId.HasValue &&
+                     targetUser.CompanyId == company.ParentCompanyId.Value &&
+                     await _db.CompanySuperUserAssignments.AnyAsync(a =>
+                         a.CompanyId == req.CompanyId && a.UserId == targetUser.UserId));
+
+                if (!allowed)
+                    return BadRequest(new { message = "User cannot be impersonated for the given company." });
+            }
+            else
+            {
+                var users = await _db.Users.AsNoTracking()
+                    .Where(u => u.CompanyId == req.CompanyId && u.IsActive)
+                    .ToListAsync();
+
+                targetUser = users
+                    .OrderBy(u => GetImpersonationPriority(u.AccessLevel))
+                    .ThenBy(u => u.EmployeeNumber)
+                    .FirstOrDefault();
+
+                if (targetUser == null)
+                    return BadRequest(new { message = "No active users found for this company." });
             }
 
             try
             {
                 var expires = DateTime.UtcNow.AddMinutes(Math.Clamp(req.ExpiresMinutes, 1, 60));
-                var token = GenerateImpersonationJwt(req.CompanyId, req.UserId, expires);
+                var token = GenerateImpersonationJwt(req.CompanyId, targetUser, expires);
 
-                // Build redirect base: prefer configured ImpersonationRedirectBase in config (e.g., client app URL /auth/impersonate)
                 var redirectBase = _cfg.GetValue<string>("Impersonation:RedirectBase");
                 if (string.IsNullOrWhiteSpace(redirectBase))
                 {
-                    // fallback to client app url from configuration "ClientApp:BaseUrl" or env var; change as necessary
                     redirectBase = _cfg.GetValue<string>("ClientApp:BaseUrl") ?? "/";
                     if (!redirectBase.EndsWith("/")) redirectBase += "/";
                     redirectBase += "auth/impersonate";
                 }
 
-                // Optionally append a redirect path for deeper landing
-                var redirectPath = string.IsNullOrWhiteSpace(req.RedirectPath) ? "" : $"&redirect={Uri.EscapeDataString(req.RedirectPath)}";
+                var redirectPath = string.IsNullOrWhiteSpace(req.RedirectPath)
+                    ? ""
+                    : $"&redirect={Uri.EscapeDataString(req.RedirectPath)}";
 
                 var url = $"{redirectBase}?token={Uri.EscapeDataString(token)}{redirectPath}";
-                return Ok(new ImpersonationResultDto { ImpersonationUrl = url, ExpiresAt = expires });
+
+                return Ok(new ImpersonationResultDto
+                {
+                    ImpersonationUrl = url,
+                    Token = token,
+                    ExpiresAt = expires
+                });
             }
             catch (Exception ex)
             {
@@ -249,16 +289,25 @@ namespace VeiraMal.API.Controllers
             }
         }
 
-        /// <summary>
-        /// Helper: generate a short-lived JWT with impersonation claims.
-        /// The application that receives this token (client app server-side endpoint /auth/impersonate)
-        /// should validate the token signature and then create an authenticated session for the impersonated tenant.
-        /// </summary>
-        private string GenerateImpersonationJwt(Guid companyId, int? userId, DateTime expiresUtc)
+        private static int GetImpersonationPriority(string? accessLevel)
         {
-            // Config keys used: Jwt:Key, Jwt:Issuer, Jwt:Audience
+            return accessLevel?.Trim().ToLowerInvariant() switch
+            {
+                "ceo" => 0,
+                "superadmin" => 1,
+                "teammanager" => 2,
+                _ => 3
+            };
+        }
+
+        /// <summary>
+        /// Creates a short-lived JWT containing the target user's claims.
+        /// </summary>
+        private string GenerateImpersonationJwt(Guid companyId, User targetUser, DateTime expiresUtc)
+        {
             var key = _cfg.GetValue<string>("Jwt:Key");
-            if (string.IsNullOrWhiteSpace(key)) throw new InvalidOperationException("Jwt:Key configuration is required for impersonation.");
+            if (string.IsNullOrWhiteSpace(key))
+                throw new InvalidOperationException("Jwt:Key configuration is required for impersonation.");
 
             var issuer = _cfg.GetValue<string>("Jwt:Issuer") ?? "VeiraMal";
             var audience = _cfg.GetValue<string>("Jwt:Audience") ?? "VeiraMalClient";
@@ -266,23 +315,21 @@ namespace VeiraMal.API.Controllers
             var securityKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(key));
             var creds = new SigningCredentials(securityKey, SecurityAlgorithms.HmacSha256);
 
-            var now = DateTime.UtcNow;
-            var handler = new JwtSecurityTokenHandler();
-            var claims = new[]
+            var claims = new List<Claim>
             {
                 new Claim("impersonation", "true"),
+                new Claim("userId", targetUser.UserId.ToString()),
                 new Claim("companyId", companyId.ToString()),
-                new Claim("superAdmin", User.Identity?.Name ?? "superadmin"),
-                // include userId only if present
-            }.ToList();
+                new Claim("access", targetUser.AccessLevel ?? ""),
+                new Claim("businessUnit", targetUser.BusinessUnit ?? "")
+            };
 
-            if (userId.HasValue) claims.Add(new Claim("userId", userId.Value.ToString()));
-
+            var handler = new JwtSecurityTokenHandler();
             var token = handler.CreateJwtSecurityToken(
                 issuer: issuer,
                 audience: audience,
                 subject: new ClaimsIdentity(claims),
-                notBefore: now,
+                notBefore: DateTime.UtcNow,
                 expires: expiresUtc,
                 signingCredentials: creds
             );
