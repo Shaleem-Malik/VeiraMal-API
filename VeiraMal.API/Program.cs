@@ -173,9 +173,12 @@ builder.Services.AddAuthentication(options =>
 // and the server will set cookies. Use a specific origin (no wildcard) when allowing credentials.
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowLocalhost3000", policy =>
+    options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:3000")
+        policy.WithOrigins(
+                "http://localhost:3000",
+                "https://dev.hranalytix.com"
+            )
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials(); // <--- critical for cookie flow
@@ -412,7 +415,7 @@ if (app.Environment.IsDevelopment())
 app.UseRouting();
 
 // IMPORTANT: CORS must be enabled BEFORE authentication so preflight responses contain required headers
-app.UseCors("AllowLocalhost3000");
+app.UseCors("AllowFrontend");
 
 app.UseAuthentication();
 app.UseAuthorization();
