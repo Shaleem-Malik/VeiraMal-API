@@ -34,6 +34,73 @@ namespace VeiraMal.API.Services
                    res == PasswordVerificationResult.SuccessRehashNeeded;
         }
 
+        public async Task<bool> HasPasswordBeenUsedAsync(User user, string newPassword, int historyLimit = 5)
+        {
+            if (user == null)
+                return false;
+
+            // Check current password first
+            if (!string.IsNullOrWhiteSpace(user.PasswordHash))
+            {
+                var current = _hasher.VerifyHashedPassword(user, user.PasswordHash, newPassword);
+                if (current == PasswordVerificationResult.Success ||
+                    current == PasswordVerificationResult.SuccessRehashNeeded)
+                {
+                    return true;
+                }
+            }
+
+            // Check password history
+            var historyHashes = await _db.UserPasswordHistories
+                .Where(x => x.UserId == user.UserId)
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .Take(historyLimit)
+                .Select(x => x.PasswordHash)
+                .ToListAsync();
+
+            foreach (var hash in historyHashes)
+            {
+                var result = _hasher.VerifyHashedPassword(user, hash, newPassword);
+                if (result == PasswordVerificationResult.Success ||
+                    result == PasswordVerificationResult.SuccessRehashNeeded)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public async Task RotatePasswordAsync(User user, string newPassword, int historyLimit = 5)
+        {
+            if (user == null)
+                throw new ArgumentNullException(nameof(user));
+
+            if (!string.IsNullOrWhiteSpace(user.PasswordHash))
+            {
+                _db.UserPasswordHistories.Add(new UserPasswordHistory
+                {
+                    UserId = user.UserId,
+                    PasswordHash = user.PasswordHash,
+                    CreatedAtUtc = DateTime.UtcNow
+                });
+            }
+
+            user.PasswordHash = _hasher.HashPassword(user, newPassword);
+
+            // optional cleanup: keep only last N history items
+            var oldHistory = await _db.UserPasswordHistories
+                .Where(x => x.UserId == user.UserId)
+                .OrderByDescending(x => x.CreatedAtUtc)
+                .Skip(historyLimit)
+                .ToListAsync();
+
+            if (oldHistory.Count > 0)
+                _db.UserPasswordHistories.RemoveRange(oldHistory);
+
+            await _db.SaveChangesAsync();
+        }
+
         public Task<string> GenerateTemporaryPasswordAsync()
         {
             // Create 12 char secure password with uppercase, lowercase, digits, special chars

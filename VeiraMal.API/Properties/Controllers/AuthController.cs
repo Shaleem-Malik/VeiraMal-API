@@ -85,23 +85,36 @@ namespace VeiraMal.API.Controllers
         [HttpPost("reset-password")]
         public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordDto dto)
         {
-            // find user from claims
+            if (dto == null || string.IsNullOrWhiteSpace(dto.NewPassword))
+                return BadRequest(new { Message = "New password is required." });
+
             var userIdClaim = User.FindFirst("userId")?.Value;
-            if (!int.TryParse(userIdClaim, out var userId)) return Unauthorized();
+            if (!int.TryParse(userIdClaim, out var userId))
+                return Unauthorized(new { Message = "Invalid user token." });
 
             var user = await _db.Users.FindAsync(userId);
-            if (user == null) return NotFound();
+            if (user == null)
+                return NotFound(new { Message = "User not found." });
 
-            // set new password
-            await _userService.SetPasswordHashAsync(user, dto.NewPassword);
+            var newPassword = dto.NewPassword.Trim();
+            if (string.IsNullOrWhiteSpace(newPassword))
+                return BadRequest(new { Message = "New password cannot be empty or whitespace." });
+
+            var (isValid, message) = _passwordValidator.ValidatePassword(newPassword);
+            if (!isValid)
+                return BadRequest(new { Message = message });
+
+            var reused = await _userService.HasPasswordBeenUsedAsync(user, newPassword);
+            if (reused)
+                return BadRequest(new { Message = "You cannot reuse a previous password." });
+
+            await _userService.RotatePasswordAsync(user, newPassword);
+
             user.IsPasswordResetRequired = false;
-
-            // This makes the next successful login behave like a first-login (client receives IsFirstLogin true).
             user.IsFirstLogin = true;
 
             await _db.SaveChangesAsync();
 
-            // send welcome email
             var subject = $"Welcome to {(await _db.Companies.FindAsync(user.CompanyId))?.CompanyName ?? "our app"}";
             var signinUrl = "https://dev.hranalytix.com/VeiraMal-Project/signin";
             var body = $@"
@@ -116,7 +129,7 @@ namespace VeiraMal.API.Controllers
                               <td style=""padding:32px;"">
                                 <p style=""margin:0 0 16px 0;color:#333;font-size:16px;"">Hi {user.FirstName},</p>
                                 <p style=""margin:0 0 20px 0;color:#666;font-size:14px;line-height:1.5;"">
-                                  Your password has been updated successfully. You can sign in here: 
+                                  Your password has been updated successfully. You can sign in here:
                                   <a href='{signinUrl}' style=""color:#0f6efd;text-decoration:none;font-weight:600;"">Sign in</a>
                                 </p>
                                 <p style=""margin:0;color:#666;font-size:14px;"">Welcome aboard!</p>
@@ -128,6 +141,7 @@ namespace VeiraMal.API.Controllers
                     </table>
                   </body>
                 </html>";
+
             await _emailService.SendEmailAsync(user.Email, subject, body);
 
             return Ok(new { Message = "Password updated and welcome email sent." });
@@ -208,7 +222,7 @@ namespace VeiraMal.API.Controllers
 
             // generate and set temporary password
             var tempPassword = await _userService.GenerateTemporaryPasswordAsync();
-            await _userService.SetPasswordHashAsync(user, tempPassword);
+            await _userService.RotatePasswordAsync(user, tempPassword);
 
             // mark that they must reset password on next login
             user.IsPasswordResetRequired = true;
@@ -219,7 +233,7 @@ namespace VeiraMal.API.Controllers
 
             // send temporary password email
             var subject = "Password reset - temporary password";
-            var signinUrl = $"{Request.Scheme}://{Request.Host.Value}/signin";
+            var signinUrl = _cfg["App:SigninUrl"];
             var body = $@"
                 <div style='font-family: Arial, sans-serif; max-width:600px;margin:0 auto;'>
                   <div style='padding:24px;background:#ffffff;border-radius:8px;'>
@@ -244,24 +258,22 @@ namespace VeiraMal.API.Controllers
         [HttpPost("change-password")]
         public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordDto dto)
         {
-            // Validate input
+            if (dto == null)
+                return BadRequest(new { Message = "Request body is required." });
+
             if (string.IsNullOrWhiteSpace(dto.CurrentPassword) || string.IsNullOrWhiteSpace(dto.NewPassword))
                 return BadRequest(new { Message = "Current password and new password are required." });
 
-            // Trim whitespace from passwords
             dto.CurrentPassword = dto.CurrentPassword.Trim();
             dto.NewPassword = dto.NewPassword.Trim();
 
-            // Check if new password is not empty after trim
             if (string.IsNullOrWhiteSpace(dto.NewPassword))
                 return BadRequest(new { Message = "New password cannot be empty or whitespace." });
 
-            // Use the injected password validator
             var (isValid, message) = _passwordValidator.ValidatePassword(dto.NewPassword);
             if (!isValid)
                 return BadRequest(new { Message = message });
 
-            // Get user from claims
             var userIdClaim = User.FindFirst("userId")?.Value;
             if (!int.TryParse(userIdClaim, out var userId))
                 return Unauthorized(new { Message = "Invalid user token." });
@@ -270,23 +282,20 @@ namespace VeiraMal.API.Controllers
             if (user == null)
                 return NotFound(new { Message = "User not found." });
 
-            // Verify current password
             var isCurrentPasswordValid = await _userService.VerifyPasswordAsync(user, dto.CurrentPassword);
             if (!isCurrentPasswordValid)
                 return BadRequest(new { Message = "Current password is incorrect." });
 
-            // Check if new password is same as current (optional but recommended)
-            // Note: Use string.Equals for comparison if case sensitivity matters
             if (dto.CurrentPassword.Equals(dto.NewPassword, StringComparison.Ordinal))
                 return BadRequest(new { Message = "New password must be different from current password." });
 
-            // Set new password
-            await _userService.SetPasswordHashAsync(user, dto.NewPassword);
+            var reused = await _userService.HasPasswordBeenUsedAsync(user, dto.NewPassword);
+            if (reused)
+                return BadRequest(new { Message = "You cannot reuse a previous password." });
 
-            // IMPORTANT: DO NOT set IsPasswordResetRequired = true
-            // The user should NOT be forced to reset password on next login
+            await _userService.RotatePasswordAsync(user, dto.NewPassword);
+
             user.IsPasswordResetRequired = false;
-            // Keep IsFirstLogin as is (false if they've logged in before)
 
             await _db.SaveChangesAsync();
 

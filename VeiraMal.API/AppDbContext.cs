@@ -44,6 +44,8 @@ namespace VeiraMal.API
         public DbSet<BaseRate> BaseRates { get; set; }
         public DbSet<EmployeeLiability> EmployeeLiabilities { get; set; }
 
+        public DbSet<UserPasswordHistory> UserPasswordHistories { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             // Existing table mappings
@@ -89,6 +91,21 @@ namespace VeiraMal.API
                 .WithMany()
                 .HasForeignKey(a => a.UserId)
                 .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<UserPasswordHistory>()
+                .ToTable("UserPasswordHistories", "dbo");
+
+            modelBuilder.Entity<UserPasswordHistory>()
+                .HasKey(x => x.UserPasswordHistoryId);
+
+            modelBuilder.Entity<UserPasswordHistory>()
+                .HasOne(x => x.User)
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            modelBuilder.Entity<UserPasswordHistory>()
+                .HasIndex(x => new { x.UserId, x.CreatedAtUtc });
 
             // Seed subscription plans (GUIDs are fixed so migrations stay stable)
             var demoId = Guid.Parse("11111111-1111-1111-1111-111111111111");
