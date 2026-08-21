@@ -171,15 +171,21 @@ namespace VeiraMal.API.Controllers
 
         private async Task<IActionResult> UpdateUserInternal(UpdateUserDto dto, Guid? subCompanyId)
         {
-            if (!ModelState.IsValid) return BadRequest(ModelState);
+            if (!ModelState.IsValid)
+                return BadRequest(ModelState);
 
             var baseCompanyId = BaseCompanyIdFromClaims();
             var callerUserId = CallerUserIdFromClaims();
 
             Guid targetCompanyId;
+
             try
             {
-                targetCompanyId = await ResolveTargetCompanyIdAsync(baseCompanyId, callerUserId, subCompanyId);
+                targetCompanyId = await ResolveTargetCompanyIdAsync(
+                    baseCompanyId,
+                    callerUserId,
+                    subCompanyId
+                );
             }
             catch (UnauthorizedAccessException)
             {
@@ -190,20 +196,74 @@ namespace VeiraMal.API.Controllers
                 return BadRequest(new { message = ex.Message });
             }
 
-            // Important: ensure the user being updated actually belongs to the target company
-            var user = await _db.Users.FirstOrDefaultAsync(u => u.UserId == dto.UserId);
-            if (user == null) return NotFound();
+            // Ensure the user being updated exists
+            var user = await _db.Users
+                .FirstOrDefaultAsync(u => u.UserId == dto.UserId);
 
+            if (user == null)
+                return NotFound();
+
+            // Ensure the user belongs to the selected company
             if (user.CompanyId != targetCompanyId)
-            {
-                // caller is trying to update a user in a different company than target => forbid
                 return Forbid();
+
+            // ============================================================
+            // LAST SUPERUSER PROTECTION
+            // ============================================================
+
+            // Only perform this check when AccessLevel is being changed.
+            if (!string.IsNullOrWhiteSpace(dto.AccessLevel))
+            {
+                var currentAccessLevel = user.AccessLevel?.Trim();
+                var newAccessLevel = dto.AccessLevel.Trim();
+
+                // Check whether the user is currently a Superuser
+                var isCurrentUserSuperuser =
+                    string.Equals(
+                        currentAccessLevel,
+                        "superUser",
+                        StringComparison.OrdinalIgnoreCase
+                    );
+
+                // Check whether the requested new access level removes Superuser
+                var isChangingToNonSuperuser =
+                    !string.Equals(
+                        newAccessLevel,
+                        "superUser",
+                        StringComparison.OrdinalIgnoreCase
+                    );
+
+                if (isCurrentUserSuperuser && isChangingToNonSuperuser)
+                {
+                    // Count the current Superusers in this company
+                    var superuserCount = await _db.Users
+                        .CountAsync(u =>
+                            u.CompanyId == targetCompanyId &&
+                            u.AccessLevel != null &&
+                            u.AccessLevel.ToLower() == "superuser");
+
+                    // Prevent removing the last remaining Superuser
+                    if (superuserCount <= 1)
+                    {
+                        return Conflict(new
+                        {
+                            message = "The last remaining Superuser cannot be reassigned. Please designate another Superuser before changing this user's role."
+                        });
+                    }
+                }
             }
+
+            // ============================================================
+            // NORMAL USER UPDATE
+            // ============================================================
 
             try
             {
                 var updated = await _manager.UpdateUserAsync(targetCompanyId, dto);
-                if (updated == null) return NotFound();
+
+                if (updated == null)
+                    return NotFound();
+
                 return Ok(updated);
             }
             catch (InvalidOperationException ex)
