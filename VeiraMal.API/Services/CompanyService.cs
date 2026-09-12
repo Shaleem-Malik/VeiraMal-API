@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using VeiraMal.API.DTOs;
@@ -20,9 +21,12 @@ namespace VeiraMal.API.Services
         private readonly ILogger<CompanyService> _logger;
         private readonly IDataProtector _protector;
 
-        // ABN must be exactly 11 digits (only digits)
-        private static readonly Regex AbnRegex = new Regex(@"^\d{11}$", RegexOptions.Compiled);
-        private static readonly Guid EnterprisePlusPlanId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        // ABN must be exactly 11 digits
+        private static readonly Regex AbnRegex =
+            new Regex(@"^\d{11}$", RegexOptions.Compiled);
+
+        private static readonly Guid EnterprisePlusPlanId =
+            Guid.Parse("55555555-5555-5555-5555-555555555555");
 
         public CompanyService(
             AppDbContext db,
@@ -37,102 +41,137 @@ namespace VeiraMal.API.Services
             _emailService = emailService;
             _cfg = cfg;
             _logger = logger;
-            _protector = dp.CreateProtector("VeiraMal.TempPasswordProtector.v1");
+            _protector = dp.CreateProtector(
+                "VeiraMal.TempPasswordProtector.v1"
+            );
         }
 
-        /// <summary>
-        /// Onboards a company and creates the superuser; returns CompanyId (Guid).
-        /// Validates ABN is exactly 11 digits; throws ArgumentException if invalid.
-        /// </summary>
-        /// <summary>
-        /// Onboards a company and creates the superuser; returns onboarding result (ids).
-        /// If sendEmail==false the temp password is not emailed — it is protected and stored in CompanySubscription.TempPasswordProtected.
-        /// </summary>
-        public async Task<OnboardResultDto> OnboardCompanyAsync(CompanyOnboardDto dto, string signinLinkBase, bool sendEmail = true)
+        // ============================================================
+        // ONBOARD COMPANY
+        // ============================================================
+
+        public async Task<OnboardResultDto> OnboardCompanyAsync(
+            CompanyOnboardDto dto,
+            string signinLinkBase,
+            bool sendEmail = true)
         {
-            // Validate required fields (basic)
             if (string.IsNullOrWhiteSpace(dto.SuperUserEmail))
                 throw new ArgumentException("SuperUserEmail is required.");
+
             if (string.IsNullOrWhiteSpace(dto.SuperUserFirstName))
                 throw new ArgumentException("SuperUserFirstName is required.");
+
             if (string.IsNullOrWhiteSpace(dto.CompanyName))
                 throw new ArgumentException("CompanyName is required.");
 
+            var superUserEmailNormalized =
+                dto.SuperUserEmail.Trim().ToUpperInvariant();
 
-            // check if a user with this email already exists (case-insensitive)
-            var superUserEmailNormalized = dto.SuperUserEmail.Trim().ToUpperInvariant();
             var emailExists = await _db.Users
                 .AsNoTracking()
-                .AnyAsync(u => u.Email != null && u.Email.ToUpper() == superUserEmailNormalized);
+                .AnyAsync(u =>
+                    u.Email != null &&
+                    u.Email.ToUpper() == superUserEmailNormalized);
 
             if (emailExists)
             {
-                // Match the exact message you requested
-                throw new ArgumentException("This email already exists. Please use a different email");
+                throw new ArgumentException(
+                    "This email already exists. Please use a different email"
+                );
             }
 
-            // Validate ABN if provided
             if (!string.IsNullOrWhiteSpace(dto.CompanyABN))
             {
-                var abn = dto.CompanyABN!.Trim();
+                var abn = dto.CompanyABN.Trim();
+
                 if (!AbnRegex.IsMatch(abn))
                 {
-                    throw new ArgumentException("Company ABN must be exactly 11 digits.");
+                    throw new ArgumentException(
+                        "Company ABN must be exactly 11 digits."
+                    );
                 }
             }
 
-            // Validate plan exists
-            var plan = await _db.SubscriptionPlans.FirstOrDefaultAsync(p => p.SubscriptionPlanId == dto.SubscriptionPlanId);
+            var plan = await _db.SubscriptionPlans
+                .FirstOrDefaultAsync(
+                    p => p.SubscriptionPlanId == dto.SubscriptionPlanId
+                );
+
             if (plan == null)
             {
-                throw new ArgumentException("Subscription plan not found. Please choose a valid plan.");
+                throw new ArgumentException(
+                    "Subscription plan not found. Please choose a valid plan."
+                );
             }
 
-            // Validate additional seats
             if (dto.AdditionalSeatsRequested < 0)
-                throw new ArgumentException("AdditionalSeatsRequested cannot be negative.");
-
-            if (!plan.AdditionalSeatsAllowed && dto.AdditionalSeatsRequested > 0)
             {
-                throw new ArgumentException("This plan does not allow purchasing additional seats at signup. Contact sales.");
+                throw new ArgumentException(
+                    "AdditionalSeatsRequested cannot be negative."
+                );
             }
 
-            // Validate against MaxHC if present
+            if (!plan.AdditionalSeatsAllowed &&
+                dto.AdditionalSeatsRequested > 0)
+            {
+                throw new ArgumentException(
+                    "This plan does not allow purchasing additional seats at signup. Contact sales."
+                );
+            }
+
             if (plan.MaxHC.HasValue)
             {
-                var totalRequested = (plan.BaseUserSeats == 0 ? int.MaxValue : plan.BaseUserSeats) + dto.AdditionalSeatsRequested;
-                if (plan.BaseUserSeats != 0 && totalRequested > plan.MaxHC.Value)
+                var totalRequested =
+                    (plan.BaseUserSeats == 0
+                        ? int.MaxValue
+                        : plan.BaseUserSeats)
+                    + dto.AdditionalSeatsRequested;
+
+                if (plan.BaseUserSeats != 0 &&
+                    totalRequested > plan.MaxHC.Value)
                 {
-                    throw new ArgumentException($"Requested seats exceed plan's HC cap of {plan.MaxHC.Value}.");
+                    throw new ArgumentException(
+                        $"Requested seats exceed plan's HC cap of {plan.MaxHC.Value}."
+                    );
                 }
             }
 
-            // If plan price is null or 0 for custom pricing, route to sales (adjust as desired)
-            if (!plan.PricePerMonth.HasValue || plan.PricePerMonth.Value == 0m)
+            if (!plan.PricePerMonth.HasValue ||
+                plan.PricePerMonth.Value == 0m)
             {
-                throw new ArgumentException("Selected plan requires a custom contract. Please contact sales to complete onboarding.");
+                throw new ArgumentException(
+                    "Selected plan requires a custom contract. Please contact sales to complete onboarding."
+                );
             }
 
-            // Create company (persist Location too)
             var company = new Company
             {
                 CompanyId = Guid.NewGuid(),
                 CompanyName = dto.CompanyName.Trim(),
-                CompanyABN = string.IsNullOrWhiteSpace(dto.CompanyABN) ? null : dto.CompanyABN.Trim(),
-                ContactNumber = string.IsNullOrWhiteSpace(dto.ContactNumber) ? null : dto.ContactNumber.Trim(),
-                Location = string.IsNullOrWhiteSpace(dto.CompanyLocation) ? null : dto.CompanyLocation.Trim(),
+                CompanyABN = string.IsNullOrWhiteSpace(dto.CompanyABN)
+                    ? null
+                    : dto.CompanyABN.Trim(),
+                ContactNumber = string.IsNullOrWhiteSpace(dto.ContactNumber)
+                    ? null
+                    : dto.ContactNumber.Trim(),
+                Location = string.IsNullOrWhiteSpace(dto.CompanyLocation)
+                    ? null
+                    : dto.CompanyLocation.Trim(),
                 CreatedAt = DateTime.UtcNow
             };
 
             await _db.Companies.AddAsync(company);
-            await _db.SaveChangesAsync(); // ensure CompanyId is persisted for FK usage
+            await _db.SaveChangesAsync();
 
-            // Compute price snapshot
-            var additionalPrice = plan.AdditionalSeatPrice ?? 0m;
-            var additionalCost = additionalPrice * dto.AdditionalSeatsRequested;
-            var monthlyPrice = (plan.PricePerMonth ?? 0m) + additionalCost;
+            var additionalPrice =
+                plan.AdditionalSeatPrice ?? 0m;
 
-            // Create company subscription snapshot
+            var additionalCost =
+                additionalPrice * dto.AdditionalSeatsRequested;
+
+            var monthlyPrice =
+                (plan.PricePerMonth ?? 0m) + additionalCost;
+
             var companySubscription = new CompanySubscription
             {
                 CompanyId = company.CompanyId,
@@ -146,43 +185,68 @@ namespace VeiraMal.API.Services
                 IsPaid = false
             };
 
-            // Create superuser and populate new fields (not email-sent yet if sendEmail==false)
             var user = new User
             {
                 CompanyId = company.CompanyId,
                 EmployeeNumber = 1,
                 FirstName = dto.SuperUserFirstName.Trim(),
-                MiddleName = string.IsNullOrWhiteSpace(dto.SuperUserMiddleName) ? null : dto.SuperUserMiddleName.Trim(),
-                LastName = string.IsNullOrWhiteSpace(dto.SuperUserLastName) ? null : dto.SuperUserLastName.Trim(),
+                MiddleName =
+                    string.IsNullOrWhiteSpace(dto.SuperUserMiddleName)
+                        ? null
+                        : dto.SuperUserMiddleName.Trim(),
+                LastName =
+                    string.IsNullOrWhiteSpace(dto.SuperUserLastName)
+                        ? null
+                        : dto.SuperUserLastName.Trim(),
                 Email = dto.SuperUserEmail.Trim(),
                 BusinessUnit = "Management",
                 AccessLevel = "superUser",
                 IsPasswordResetRequired = true,
                 IsFirstLogin = true,
-                ContactNumber = string.IsNullOrWhiteSpace(dto.SuperUserContactNumber) ? company.ContactNumber : dto.SuperUserContactNumber.Trim(),
-                Location = string.IsNullOrWhiteSpace(dto.SuperUserLocation) ? company.Location : dto.SuperUserLocation.Trim()
+                ContactNumber =
+                    string.IsNullOrWhiteSpace(dto.SuperUserContactNumber)
+                        ? company.ContactNumber
+                        : dto.SuperUserContactNumber.Trim(),
+                Location =
+                    string.IsNullOrWhiteSpace(dto.SuperUserLocation)
+                        ? company.Location
+                        : dto.SuperUserLocation.Trim()
             };
 
-            // generate temp password and hash
-            var tempPassword = await _userService.GenerateTemporaryPasswordAsync();
-            await _userService.SetPasswordHashAsync(user, tempPassword);
+            var tempPassword =
+                await _userService.GenerateTemporaryPasswordAsync();
+
+            await _userService.SetPasswordHashAsync(
+                user,
+                tempPassword
+            );
 
             await _db.Users.AddAsync(user);
 
-            // Protect temp password and store on subscription until payment succeeds (if we're postponing email)
-            var protectedTemp = _protector.Protect(tempPassword);
-            companySubscription.TempPasswordProtected = protectedTemp;
+            var protectedTemp =
+                _protector.Protect(tempPassword);
 
-            await _db.CompanySubscriptions.AddAsync(companySubscription);
+            companySubscription.TempPasswordProtected =
+                protectedTemp;
+
+            await _db.CompanySubscriptions.AddAsync(
+                companySubscription
+            );
 
             await _db.SaveChangesAsync();
 
-            // If caller requested immediate email, send it now (legacy behavior). Otherwise postpone until webhook confirmation.
             if (sendEmail)
             {
-                await SendOnboardingEmailAsync(user, company, companySubscription, tempPassword, signinLinkBase);
-                // clear protected temp if you want (optional)
+                await SendOnboardingEmailAsync(
+                    user,
+                    company,
+                    companySubscription,
+                    tempPassword,
+                    signinLinkBase
+                );
+
                 companySubscription.TempPasswordProtected = null;
+
                 await _db.SaveChangesAsync();
             }
 
@@ -190,187 +254,311 @@ namespace VeiraMal.API.Services
             {
                 CompanyId = company.CompanyId,
                 UserId = user.UserId,
-                CompanySubscriptionId = companySubscription.CompanySubscriptionId,
-                AmountInCents = (int)(companySubscription.MonthlyPriceSnapshot * 100) // for frontend convenience
+                CompanySubscriptionId =
+                    companySubscription.CompanySubscriptionId,
+                AmountInCents =
+                    (int)(
+                        companySubscription.MonthlyPriceSnapshot * 100
+                    )
             };
         }
 
-        /// <summary>
-        /// Unprotect temp password, send the email, and mark subscription as paid.
-        /// This is intended to be called by the payment webhook AFTER Stripe confirms payment.
-        /// </summary>
-        public async Task FinalizeOnboardPaymentAsync(Guid companyId, int userId, Guid companySubscriptionId, string signinLinkBase)
+        // ============================================================
+        // FINALIZE ONBOARDING
+        // ============================================================
+
+        public async Task FinalizeOnboardPaymentAsync(
+            Guid companyId,
+            int userId,
+            Guid companySubscriptionId,
+            string signinLinkBase)
         {
-            var companySubscription = await _db.CompanySubscriptions
-                .FirstOrDefaultAsync(cs => cs.CompanySubscriptionId == companySubscriptionId && cs.CompanyId == companyId);
+            var companySubscription =
+                await _db.CompanySubscriptions
+                    .FirstOrDefaultAsync(cs =>
+                        cs.CompanySubscriptionId ==
+                            companySubscriptionId &&
+                        cs.CompanyId == companyId);
 
             if (companySubscription == null)
-                throw new ArgumentException("Company subscription not found.");
+            {
+                throw new ArgumentException(
+                    "Company subscription not found."
+                );
+            }
 
             if (companySubscription.IsPaid)
             {
-                _logger.LogInformation("CompanySubscription {Id} already marked as paid; skipping.", companySubscriptionId);
-                return; // idempotent
+                _logger.LogInformation(
+                    "CompanySubscription {Id} already marked as paid; skipping.",
+                    companySubscriptionId
+                );
+
+                return;
             }
 
-            var user = await _db.Users.FirstOrDefaultAsync(u => u.UserId == userId && u.CompanyId == companyId);
+            var user = await _db.Users
+                .FirstOrDefaultAsync(u =>
+                    u.UserId == userId &&
+                    u.CompanyId == companyId);
+
             if (user == null)
-                throw new ArgumentException("User not found for this company.");
+                throw new ArgumentException(
+                    "User not found for this company."
+                );
 
-            var company = await _db.Companies.FirstOrDefaultAsync(c => c.CompanyId == companyId);
+            var company = await _db.Companies
+                .FirstOrDefaultAsync(c =>
+                    c.CompanyId == companyId);
+
             if (company == null)
-                throw new ArgumentException("Company not found.");
+                throw new ArgumentException(
+                    "Company not found."
+                );
 
-            if (string.IsNullOrWhiteSpace(companySubscription.TempPasswordProtected))
+            if (string.IsNullOrWhiteSpace(
+                companySubscription.TempPasswordProtected))
             {
-                _logger.LogError("No protected temp password found for CompanySubscription {Id}", companySubscriptionId);
-                throw new InvalidOperationException("Missing protected temp password.");
+                _logger.LogError(
+                    "No protected temp password found for CompanySubscription {Id}",
+                    companySubscriptionId
+                );
+
+                throw new InvalidOperationException(
+                    "Missing protected temp password."
+                );
             }
 
-            // Unprotect to get temp password
             string tempPassword;
+
             try
             {
-                tempPassword = _protector.Unprotect(companySubscription.TempPasswordProtected);
+                tempPassword =
+                    _protector.Unprotect(
+                        companySubscription.TempPasswordProtected
+                    );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to unprotect temp password for CompanySubscription {Id}", companySubscriptionId);
+                _logger.LogError(
+                    ex,
+                    "Failed to unprotect temp password for CompanySubscription {Id}",
+                    companySubscriptionId
+                );
+
                 throw;
             }
 
-            // Send the onboarding email
-            await SendOnboardingEmailAsync(user, company, companySubscription, tempPassword, signinLinkBase);
+            await SendOnboardingEmailAsync(
+                user,
+                company,
+                companySubscription,
+                tempPassword,
+                signinLinkBase
+            );
 
-            // Mark paid and clear protected password
             companySubscription.IsPaid = true;
             companySubscription.TempPasswordProtected = null;
+
             await _db.SaveChangesAsync();
         }
 
-        private async Task SendOnboardingEmailAsync(User user, Company company, CompanySubscription companySubscription, string tempPassword, string signinLinkBase)
+        // ============================================================
+        // ONBOARDING EMAIL
+        // ============================================================
+
+        private async Task SendOnboardingEmailAsync(
+            User user,
+            Company company,
+            CompanySubscription companySubscription,
+            string tempPassword,
+            string signinLinkBase)
         {
-            var signInUrl = signinLinkBase; // passed in from controller
-            var encodedSignInUrl = System.Net.WebUtility.HtmlEncode(signInUrl);
-            var encodedFirstName = System.Net.WebUtility.HtmlEncode(user.FirstName);
-            var encodedTempPassword = System.Net.WebUtility.HtmlEncode(tempPassword);
-            var companyNameEncoded = System.Net.WebUtility.HtmlEncode(company.CompanyName);
+            var signInUrl = signinLinkBase;
 
-            var logoUrl = _cfg.GetValue<string>("SendGrid:LogoUrl"); // optional, set in appsettings
-            var encodedLogoUrl = string.IsNullOrWhiteSpace(logoUrl) ? "" : System.Net.WebUtility.HtmlEncode(logoUrl);
+            var encodedSignInUrl =
+                System.Net.WebUtility.HtmlEncode(signInUrl);
 
-            var subject = $"Welcome to {companyNameEncoded} — Account Created";
+            var encodedFirstName =
+                System.Net.WebUtility.HtmlEncode(user.FirstName);
+
+            var encodedTempPassword =
+                System.Net.WebUtility.HtmlEncode(tempPassword);
+
+            var companyNameEncoded =
+                System.Net.WebUtility.HtmlEncode(
+                    company.CompanyName
+                );
+
+            var logoUrl =
+                _cfg.GetValue<string>("SendGrid:LogoUrl");
+
+            var encodedLogoUrl =
+                string.IsNullOrWhiteSpace(logoUrl)
+                    ? ""
+                    : System.Net.WebUtility.HtmlEncode(logoUrl);
+
+            var subject =
+                $"Welcome to {companyNameEncoded} — Account Created";
 
             var body = $@"
-                <!doctype html>
-                <html lang=""en"">
-                  <head>
-                    <meta charset=""utf-8"">
-                    <meta name=""viewport"" content=""width=device-width, initial-scale=1.0""/>
-                    <title>Welcome to {companyNameEncoded}</title>
-                  </head>
-                  <body style=""margin:0;padding:0;background-color:#f4f6f8;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;"">
-                    <table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""background-color:#f4f6f8;padding:20px 0;"">
-                      <tr>
-                        <td align=""center"">
-                          <table role=""presentation"" width=""600"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,0.06);"">
-                            <tr>
-                              <td style=""padding:24px 28px;border-bottom:1px solid #eef2f5;background:linear-gradient(90deg,#0f6efd,#0b70d0);"">
-                                <table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"">
-                                  <tr>
-                                    <td style=""vertical-align:middle;"">
-                                      {(string.IsNullOrWhiteSpace(encodedLogoUrl)
-                                          ? $"<span style=\"\";color:#ffffff;font-weight:700;font-size:18px;\">{companyNameEncoded}</span>"
-                                          : $"<img src=\"{encodedLogoUrl}\" alt=\"{companyNameEncoded} logo\" width=\"160\" style=\"display:block;border:0;max-width:160px;height:auto;\" />")}
-                                    </td>
-                                    <td align=""right"" style=""vertical-align:middle;color:#ffffff;font-size:14px;"">
-                                      <span style=""opacity:0.95;font-weight:600;"">Welcome aboard</span>
-                                    </td>
-                                  </tr>
-                                </table>
-                              </td>
-                            </tr>
+<!doctype html>
+<html lang=""en"">
+<head>
+<meta charset=""utf-8"">
+<meta name=""viewport"" content=""width=device-width, initial-scale=1.0""/>
+<title>Welcome to {companyNameEncoded}</title>
+</head>
+<body style=""margin:0;padding:0;background-color:#f4f6f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;"">
 
-                            <tr>
-                              <td style=""padding:28px 32px;color:#334155;"">
-                                <h1 style=""margin:0 0 12px 0;font-size:20px;font-weight:700;color:#0f172a;"">Hello {encodedFirstName},</h1>
-                                <p style=""margin:0 0 18px 0;color:#475569;line-height:1.6;font-size:15px;"">
-                                  Your account for <strong>{companyNameEncoded}</strong> has been created successfully. Use the temporary password below to sign in — you'll be prompted to set a new password on first login.
-                                </p>
+<table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""background-color:#f4f6f8;padding:20px 0;"">
+<tr>
+<td align=""center"">
 
-                                <div style=""margin:16px 0 22px 0;padding:14px;border-radius:6px;background:#f8fafc;border:1px solid #e6eef8;font-family: 'Courier New', Courier, monospace;color:#0f172a;font-size:16px;display:inline-block;"">
-                                  Temporary password: <strong style=""margin-left:8px;"">{encodedTempPassword}</strong>
-                                </div>
+<table role=""presentation"" width=""600"" cellspacing=""0"" cellpadding=""0"" border=""0"" style=""background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,0.06);"">
 
-                                <div style=""margin:22px 0;text-align:left;"">
-                                  <a href=""{encodedSignInUrl}"" target=""_blank"" rel=""noopener noreferrer"" style=""display:inline-block;padding:12px 20px;border-radius:6px;background:#0f6efd;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;"">
-                                    Sign in to your account
-                                  </a>
-                                </div>
+<tr>
+<td style=""padding:24px 28px;border-bottom:1px solid #eef2f5;background:linear-gradient(90deg,#0f6efd,#0b70d0);"">
 
-                                <p style=""margin:12px 0 8px 0;color:#64748b;font-size:13px;line-height:1.5;"">
-                                  If the button doesn't work, copy and paste the link below into your browser:
-                                </p>
+<table role=""presentation"" width=""100%"" cellspacing=""0"" cellpadding=""0"" border=""0"">
+<tr>
 
-                                <p style=""word-break:break-all;font-size:13px;color:#0f172a;margin:0 0 18px 0;"">
-                                  <a href=""{encodedSignInUrl}"" target=""_blank"" rel=""noopener noreferrer"" style=""color:#0b69ff;text-decoration:underline;"">{encodedSignInUrl}</a>
-                                </p>
+<td style=""vertical-align:middle;"">
+{(string.IsNullOrWhiteSpace(encodedLogoUrl)
+        ? $"<span style=\"color:#ffffff;font-weight:700;font-size:18px;\">{companyNameEncoded}</span>"
+        : $"<img src=\"{encodedLogoUrl}\" alt=\"{companyNameEncoded} logo\" width=\"160\" style=\"display:block;border:0;max-width:160px;height:auto;\" />")}
+</td>
 
-                                <p style=""margin:0;color:#64748b;font-size:13px;line-height:1.5;"">
-                                  This temporary password will expire in <strong>48 hours</strong>. If you did not request this account, please contact our support team immediately.
-                                </p>
-                              </td>
-                            </tr>
+<td align=""right"" style=""vertical-align:middle;color:#ffffff;font-size:14px;"">
+<span style=""opacity:0.95;font-weight:600;"">
+Welcome aboard
+</span>
+</td>
 
-                            <tr>
-                              <td style=""padding:0 32px 18px 32px;"">
-                                <hr style=""border:none;height:1px;background:#eef2f8;margin:0;"" />
-                              </td>
-                            </tr>
+</tr>
+</table>
 
-                            <tr>
-                              <td style=""padding:14px 32px 28px 32px;font-size:13px;color:#94a3b8;"">
-                                <p style=""margin:0 0 8px 0;"">
-                                  Need help? Email us at <a href=""mailto:support@hranalytix.com"" style=""color:#0b69ff;text-decoration:underline;"">support@veiramal.com</a>.
-                                </p>
+</td>
+</tr>
 
-                                <p style=""margin:6px 0 0 0;font-size:12px;color:#94a3b8;"">
-                                  HrAnalytix — {companyNameEncoded}<br/>
-                                  123 Business Address, Floor 2, Sector X<br/>
-                                  xyz, Australia
-                                </p>
+<tr>
+<td style=""padding:28px 32px;color:#334155;"">
 
-                                <p style=""margin:12px 0 0 0;font-size:12px;color:#94a3b8;"">
-                                  You received this email because an account was created for you. If you don’t want these emails, <a href=""#"" style=""color:#0b69ff;text-decoration:underline;"">unsubscribe</a>.
-                                </p>
-                              </td>
-                            </tr>
+<h1 style=""margin:0 0 12px 0;font-size:20px;font-weight:700;color:#0f172a;"">
+Hello {encodedFirstName},
+</h1>
 
-                          </table>
-                        </td>
-                      </tr>
-                    </table>
-                  </body>
-                </html>
-                ";
+<p style=""margin:0 0 18px 0;color:#475569;line-height:1.6;font-size:15px;"">
+Your account for <strong>{companyNameEncoded}</strong> has been created successfully.
+Use the temporary password below to sign in — you'll be prompted to set a new password on first login.
+</p>
+
+<div style=""margin:16px 0 22px 0;padding:14px;border-radius:6px;background:#f8fafc;border:1px solid #e6eef8;font-family:'Courier New',Courier,monospace;color:#0f172a;font-size:16px;display:inline-block;"">
+Temporary password:
+<strong style=""margin-left:8px;"">
+{encodedTempPassword}
+</strong>
+</div>
+
+<div style=""margin:22px 0;text-align:left;"">
+<a href=""{encodedSignInUrl}"" target=""_blank"" rel=""noopener noreferrer"" style=""display:inline-block;padding:12px 20px;border-radius:6px;background:#0f6efd;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;"">
+Sign in to your account
+</a>
+</div>
+
+<p style=""margin:12px 0 8px 0;color:#64748b;font-size:13px;line-height:1.5;"">
+If the button doesn't work, copy and paste the link below into your browser:
+</p>
+
+<p style=""word-break:break-all;font-size:13px;color:#0f172a;margin:0 0 18px 0;"">
+<a href=""{encodedSignInUrl}"" target=""_blank"" rel=""noopener noreferrer"" style=""color:#0b69ff;text-decoration:underline;"">
+{encodedSignInUrl}
+</a>
+</p>
+
+<p style=""margin:0;color:#64748b;font-size:13px;line-height:1.5;"">
+This temporary password will expire in <strong>48 hours</strong>.
+If you did not request this account, please contact our support team immediately.
+</p>
+
+</td>
+</tr>
+
+<tr>
+<td style=""padding:0 32px 18px 32px;"">
+<hr style=""border:none;height:1px;background:#eef2f8;margin:0;"" />
+</td>
+</tr>
+
+<tr>
+<td style=""padding:14px 32px 28px 32px;font-size:13px;color:#94a3b8;"">
+
+<p style=""margin:0 0 8px 0;"">
+Need help?
+Email us at
+<a href=""mailto:support@hranalytix.com"" style=""color:#0b69ff;text-decoration:underline;"">
+support@veiramal.com
+</a>.
+</p>
+
+<p style=""margin:6px 0 0 0;font-size:12px;color:#94a3b8;"">
+HrAnalytix — {companyNameEncoded}<br/>
+123 Business Address, Floor 2, Sector X<br/>
+xyz, Australia
+</p>
+
+<p style=""margin:12px 0 0 0;font-size:12px;color:#94a3b8;"">
+You received this email because an account was created for you.
+If you don’t want these emails,
+<a href=""#"" style=""color:#0b69ff;text-decoration:underline;"">
+unsubscribe
+</a>.
+</p>
+
+</td>
+</tr>
+
+</table>
+
+</td>
+</tr>
+</table>
+
+</body>
+</html>
+";
 
             try
             {
-                await _emailService.SendEmailAsync(user.Email, subject, body);
+                await _emailService.SendEmailAsync(
+                    user.Email,
+                    subject,
+                    body
+                );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to send onboarding email to {Email} for CompanyId={CompanyId}", user.Email, company.CompanyId);
+                _logger.LogError(
+                    ex,
+                    "Failed to send onboarding email to {Email} for CompanyId={CompanyId}",
+                    user.Email,
+                    company.CompanyId
+                );
             }
         }
 
-        /// <summary>
-        /// Returns company details or null if not found.
-        /// </summary>
+        // ============================================================
+        // GET COMPANY
+        // ============================================================
+
         public async Task<CompanyDto?> GetCompanyAsync(Guid companyId)
         {
-            var c = await _db.Companies.FirstOrDefaultAsync(x => x.CompanyId == companyId);
-            if (c == null) return null;
+            var c = await _db.Companies
+                .FirstOrDefaultAsync(x =>
+                    x.CompanyId == companyId);
+
+            if (c == null)
+                return null;
 
             return new CompanyDto
             {
@@ -378,40 +566,66 @@ namespace VeiraMal.API.Services
                 CompanyName = c.CompanyName,
                 CompanyABN = c.CompanyABN,
                 ContactNumber = c.ContactNumber,
-                Location = c.Location,     // <--- include Location
+                Location = c.Location,
                 CreatedAt = c.CreatedAt,
                 LogoUrl = c.LogoUrl
             };
         }
 
-        /// <summary>
-        /// Updates company details. Validates ABN format. Throws ArgumentException on validation error.
-        /// Returns updated CompanyDto.
-        /// </summary>
-        public async Task<CompanyDto> UpdateCompanyAsync(Guid companyId, CompanyUpdateDto dto)
+        // ============================================================
+        // UPDATE COMPANY
+        // ============================================================
+
+        public async Task<CompanyDto> UpdateCompanyAsync(
+            Guid companyId,
+            CompanyUpdateDto dto)
         {
             if (string.IsNullOrWhiteSpace(dto.CompanyName))
-                throw new ArgumentException("CompanyName is required.");
+                throw new ArgumentException(
+                    "CompanyName is required."
+                );
 
             if (!string.IsNullOrWhiteSpace(dto.CompanyABN))
             {
-                var abn = dto.CompanyABN!.Trim();
+                var abn = dto.CompanyABN.Trim();
+
                 if (!AbnRegex.IsMatch(abn))
-                    throw new ArgumentException("Company ABN must be exactly 11 digits.");
+                {
+                    throw new ArgumentException(
+                        "Company ABN must be exactly 11 digits."
+                    );
+                }
             }
 
-            var company = await _db.Companies.FirstOrDefaultAsync(c => c.CompanyId == companyId);
+            var company = await _db.Companies
+                .FirstOrDefaultAsync(c =>
+                    c.CompanyId == companyId);
+
             if (company == null)
-                throw new ArgumentException("Company not found.");
+                throw new ArgumentException(
+                    "Company not found."
+                );
 
-            company.CompanyName = dto.CompanyName.Trim();
-            company.CompanyABN = string.IsNullOrWhiteSpace(dto.CompanyABN) ? null : dto.CompanyABN!.Trim();
-            company.ContactNumber = string.IsNullOrWhiteSpace(dto.ContactNumber) ? null : dto.ContactNumber!.Trim();
+            company.CompanyName =
+                dto.CompanyName.Trim();
 
-            // NEW: persist Location from DTO
-            company.Location = string.IsNullOrWhiteSpace(dto.Location) ? null : dto.Location!.Trim();
+            company.CompanyABN =
+                string.IsNullOrWhiteSpace(dto.CompanyABN)
+                    ? null
+                    : dto.CompanyABN.Trim();
+
+            company.ContactNumber =
+                string.IsNullOrWhiteSpace(dto.ContactNumber)
+                    ? null
+                    : dto.ContactNumber.Trim();
+
+            company.Location =
+                string.IsNullOrWhiteSpace(dto.Location)
+                    ? null
+                    : dto.Location.Trim();
 
             _db.Companies.Update(company);
+
             await _db.SaveChangesAsync();
 
             return new CompanyDto
@@ -420,83 +634,142 @@ namespace VeiraMal.API.Services
                 CompanyName = company.CompanyName,
                 CompanyABN = company.CompanyABN,
                 ContactNumber = company.ContactNumber,
-                Location = company.Location, // <--- return it to client
+                Location = company.Location,
                 CreatedAt = company.CreatedAt,
                 LogoUrl = company.LogoUrl
             };
         }
 
-        /// <summary>
-        /// Create a subcompany under parentCompanyId.
-        /// Only companies with Enterprise Plus plan are allowed to create subcompanies.
-        /// </summary>
-        public async Task<SubCompanyDto> CreateSubCompanyAsync(Guid parentCompanyId, CreateSubCompanyDto dto)
+        // ============================================================
+        // CREATE SUBCOMPANY
+        // ============================================================
+
+        public async Task<SubCompanyDto> CreateSubCompanyAsync(
+            Guid parentCompanyId,
+            CreateSubCompanyDto dto)
         {
-            if (dto == null) throw new ArgumentNullException(nameof(dto));
-            if (string.IsNullOrWhiteSpace(dto.CompanyName)) throw new ArgumentException("CompanyName is required.");
+            if (dto == null)
+                throw new ArgumentNullException(nameof(dto));
 
-            // Verify parent company exists
-            var parentCompany = await _db.Companies.FirstOrDefaultAsync(c => c.CompanyId == parentCompanyId);
-            if (parentCompany == null) throw new ArgumentException("Parent company not found.");
+            if (string.IsNullOrWhiteSpace(dto.CompanyName))
+                throw new ArgumentException(
+                    "CompanyName is required."
+                );
 
-            // Verify parent's active subscription plan allows subcompanies (Enterprise Plus only)
-            var companySubscription = await _db.CompanySubscriptions
-                .Where(cs => cs.CompanyId == parentCompanyId)
-                .OrderByDescending(cs => cs.StartDate) // latest
-                .Include(cs => cs.SubscriptionPlan)
-                .FirstOrDefaultAsync();
+            var parentCompany = await _db.Companies
+                .FirstOrDefaultAsync(c =>
+                    c.CompanyId == parentCompanyId);
 
-            if (companySubscription == null) throw new InvalidOperationException("Parent company does not have an active subscription.");
+            if (parentCompany == null)
+                throw new ArgumentException(
+                    "Parent company not found."
+                );
 
-            var plan = await _db.SubscriptionPlans.FirstOrDefaultAsync(p => p.SubscriptionPlanId == companySubscription.SubscriptionPlanId);
-            if (plan == null) throw new InvalidOperationException("Parent company subscription plan not found.");
+            var companySubscription =
+                await _db.CompanySubscriptions
+                    .Where(cs =>
+                        cs.CompanyId == parentCompanyId)
+                    .OrderByDescending(cs =>
+                        cs.StartDate)
+                    .Include(cs =>
+                        cs.SubscriptionPlan)
+                    .FirstOrDefaultAsync();
 
-            // Only Enterprise Plus allowed to create subcompanies
-            // check by GUID to be strict: Enterprise Plus GUID = 5555...
-            if (plan.SubscriptionPlanId != EnterprisePlusPlanId && !string.Equals(plan.Package, "Enterprise Plus", StringComparison.OrdinalIgnoreCase))
+            if (companySubscription == null)
             {
-                throw new InvalidOperationException("Only companies on the Enterprise Plus plan can create subcompanies.");
+                throw new InvalidOperationException(
+                    "Parent company does not have an active subscription."
+                );
             }
 
-            // Create the subcompany (persist ParentCompanyId)
+            var plan = await _db.SubscriptionPlans
+                .FirstOrDefaultAsync(p =>
+                    p.SubscriptionPlanId ==
+                    companySubscription.SubscriptionPlanId);
+
+            if (plan == null)
+            {
+                throw new InvalidOperationException(
+                    "Parent company subscription plan not found."
+                );
+            }
+
+            if (plan.SubscriptionPlanId != EnterprisePlusPlanId &&
+                !string.Equals(
+                    plan.Package,
+                    "Enterprise Plus",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Only companies on the Enterprise Plus plan can create subcompanies."
+                );
+            }
+
             var subCompany = new Company
             {
                 CompanyId = Guid.NewGuid(),
                 CompanyName = dto.CompanyName.Trim(),
-                CompanyABN = string.IsNullOrWhiteSpace(dto.CompanyABN) ? null : dto.CompanyABN.Trim(),
-                ContactNumber = string.IsNullOrWhiteSpace(dto.ContactNumber) ? null : dto.ContactNumber.Trim(),
-                Location = string.IsNullOrWhiteSpace(dto.Location) ? null : dto.Location.Trim(),
+                CompanyABN =
+                    string.IsNullOrWhiteSpace(dto.CompanyABN)
+                        ? null
+                        : dto.CompanyABN.Trim(),
+                ContactNumber =
+                    string.IsNullOrWhiteSpace(dto.ContactNumber)
+                        ? null
+                        : dto.ContactNumber.Trim(),
+                Location =
+                    string.IsNullOrWhiteSpace(dto.Location)
+                        ? null
+                        : dto.Location.Trim(),
                 ParentCompanyId = parentCompanyId,
                 CreatedAt = DateTime.UtcNow
             };
 
             await _db.Companies.AddAsync(subCompany);
 
-            // Validate assigned superuser ids (must be superusers from parent company)
-            if (dto.AssignedSuperUserIds != null && dto.AssignedSuperUserIds.Length > 0)
-            {
-                // Fetch those users and validate
-                var parentSuperUsers = await _db.Users
-                    .Where(u => u.CompanyId == parentCompanyId && u.AccessLevel == "superUser" && dto.AssignedSuperUserIds.Contains(u.UserId))
-                    .Select(u => u.UserId)
-                    .ToListAsync();
+            // Remove duplicate IDs from incoming request
+            var requestedUserIds =
+                (dto.AssignedSuperUserIds ??
+                 Array.Empty<int>())
+                .Distinct()
+                .ToArray();
 
-                // If any provided Ids not found/valid, ignore or throw (here we throw to notify caller)
-                var missing = dto.AssignedSuperUserIds.Except(parentSuperUsers).ToArray();
+            var validParentSuperUsers =
+                Array.Empty<int>();
+
+            if (requestedUserIds.Length > 0)
+            {
+                validParentSuperUsers =
+                    await _db.Users
+                        .Where(u =>
+                            u.CompanyId == parentCompanyId &&
+                            u.AccessLevel == "superUser" &&
+                            u.IsActive &&
+                            requestedUserIds.Contains(u.UserId))
+                        .Select(u => u.UserId)
+                        .ToArrayAsync();
+
+                var missing =
+                    requestedUserIds
+                        .Except(validParentSuperUsers)
+                        .ToArray();
+
                 if (missing.Length > 0)
                 {
-                    throw new InvalidOperationException($"One or more assigned users are not valid superusers of the parent company: {string.Join(',', missing)}");
+                    throw new InvalidOperationException(
+                        $"One or more assigned users are not valid superusers of the parent company: {string.Join(',', missing)}"
+                    );
                 }
 
-                // add assignments
-                foreach (var uid in parentSuperUsers)
+                foreach (var uid in validParentSuperUsers.Distinct())
                 {
-                    var assign = new CompanySuperUserAssignment
-                    {
-                        CompanyId = subCompany.CompanyId,
-                        UserId = uid
-                    };
-                    await _db.CompanySuperUserAssignments.AddAsync(assign);
+                    await _db.CompanySuperUserAssignments.AddAsync(
+                        new CompanySuperUserAssignment
+                        {
+                            CompanyId = subCompany.CompanyId,
+                            UserId = uid
+                        }
+                    );
                 }
             }
 
@@ -510,75 +783,160 @@ namespace VeiraMal.API.Services
                 ContactNumber = subCompany.ContactNumber,
                 Location = subCompany.Location,
                 ParentCompanyId = parentCompanyId,
-                CreatedAt = subCompany.CreatedAt
+                CreatedAt = subCompany.CreatedAt,
+                AssignedSuperUserIds =
+                    validParentSuperUsers
+                        .Distinct()
+                        .ToArray()
             };
         }
 
-        public async Task<List<SubCompanyDto>> ListSubCompaniesAsync(Guid parentCompanyId)
+        // ============================================================
+        // LIST SUBCOMPANIES
+        // ============================================================
+
+        public async Task<List<SubCompanyDto>> ListSubCompaniesAsync(
+            Guid parentCompanyId)
         {
             var children = await _db.Companies
-                .Where(c => c.ParentCompanyId == parentCompanyId)
+                .Where(c =>
+                    c.ParentCompanyId == parentCompanyId)
                 .OrderBy(c => c.CompanyName)
                 .ToListAsync();
 
-            return children.Select(c => new SubCompanyDto
-            {
-                CompanyId = c.CompanyId,
-                CompanyName = c.CompanyName,
-                CompanyABN = c.CompanyABN,
-                ContactNumber = c.ContactNumber,
-                Location = c.Location,
-                ParentCompanyId = parentCompanyId,
-                CreatedAt = c.CreatedAt
-            }).ToList();
+            var companyIds = children
+                .Select(c => c.CompanyId)
+                .ToList();
+
+            var assignments = await _db.CompanySuperUserAssignments
+                .Where(a =>
+                    companyIds.Contains(a.CompanyId))
+                .Select(a => new
+                {
+                    a.CompanyId,
+                    a.UserId
+                })
+                .ToListAsync();
+
+            return children
+                .Select(c => new SubCompanyDto
+                {
+                    CompanyId = c.CompanyId,
+                    CompanyName = c.CompanyName,
+                    CompanyABN = c.CompanyABN,
+                    ContactNumber = c.ContactNumber,
+                    Location = c.Location,
+                    ParentCompanyId = parentCompanyId,
+                    CreatedAt = c.CreatedAt,
+
+                    AssignedSuperUserIds =
+                        assignments
+                            .Where(a =>
+                                a.CompanyId == c.CompanyId)
+                            .Select(a => a.UserId)
+                            .Distinct()
+                            .ToArray()
+                })
+                .ToList();
         }
 
-        /// <summary>
-        /// Returns list of users in parent company that have AccessLevel = "superUser".
-        /// Useful to populate dropdown.
-        /// </summary>
-        public async Task<List<User>> GetParentCompanySuperUsersAsync(Guid parentCompanyId)
+        // ============================================================
+        // GET PARENT COMPANY SUPERUSERS
+        // ============================================================
+
+        public async Task<List<User>>
+            GetParentCompanySuperUsersAsync(
+                Guid parentCompanyId)
         {
             return await _db.Users
-                .Where(u => u.CompanyId == parentCompanyId && u.AccessLevel == "superUser" && u.IsActive)
+                .Where(u =>
+                    u.CompanyId == parentCompanyId &&
+                    u.AccessLevel == "superUser" &&
+                    u.IsActive)
                 .OrderBy(u => u.EmployeeNumber)
                 .ToListAsync();
         }
 
-        /// <summary>
-        /// Assigns the given parent-company user ids as managers for the subcompany.
-        /// This will replace existing assignments if replaceExisting==true, otherwise it will upsert.
-        /// </summary>
-        public async Task AssignSuperUsersToSubCompanyAsync(Guid parentCompanyId, Guid subCompanyId, int[] userIds, bool replaceExisting = true)
+        // ============================================================
+        // ASSIGN SUPERUSERS TO SUBCOMPANY
+        // ============================================================
+
+        public async Task AssignSuperUsersToSubCompanyAsync(
+            Guid parentCompanyId,
+            Guid subCompanyId,
+            int[] userIds,
+            bool replaceExisting = true)
         {
-            // Ensure subcompany belongs to parentCompanyId
-            var subCompany = await _db.Companies.FirstOrDefaultAsync(c => c.CompanyId == subCompanyId);
-            if (subCompany == null) throw new ArgumentException("Subcompany not found.");
-            if (subCompany.ParentCompanyId != parentCompanyId) throw new InvalidOperationException("Subcompany does not belong to the given parent company.");
+            var subCompany = await _db.Companies
+                .FirstOrDefaultAsync(c =>
+                    c.CompanyId == subCompanyId);
 
-            // Validate users are actual superusers for the parent company
-            var validParentSuperUsers = await _db.Users
-                .Where(u => u.CompanyId == parentCompanyId && u.AccessLevel == "superUser" && userIds.Contains(u.UserId))
-                .Select(u => u.UserId)
-                .ToListAsync();
+            if (subCompany == null)
+            {
+                throw new ArgumentException(
+                    "Subcompany not found."
+                );
+            }
 
-            var invalid = userIds.Except(validParentSuperUsers).ToArray();
+            if (subCompany.ParentCompanyId != parentCompanyId)
+            {
+                throw new InvalidOperationException(
+                    "Subcompany does not belong to the given parent company."
+                );
+            }
+
+            // Clean incoming IDs
+            userIds = (userIds ?? Array.Empty<int>())
+                .Distinct()
+                .ToArray();
+
+            // Validate that every selected user is:
+            // - in the parent company
+            // - a Superuser
+            // - active
+            var validParentSuperUsers =
+                await _db.Users
+                    .Where(u =>
+                        u.CompanyId == parentCompanyId &&
+                        u.AccessLevel == "superUser" &&
+                        u.IsActive &&
+                        userIds.Contains(u.UserId))
+                    .Select(u => u.UserId)
+                    .ToListAsync();
+
+            var invalid =
+                userIds
+                    .Except(validParentSuperUsers)
+                    .ToArray();
+
             if (invalid.Length > 0)
-                throw new InvalidOperationException($"Some users are not valid parent-company superusers: {string.Join(',', invalid)}");
+            {
+                throw new InvalidOperationException(
+                    $"Some users are not valid parent-company superusers: {string.Join(',', invalid)}"
+                );
+            }
 
             if (replaceExisting)
             {
-                var existing = _db.CompanySuperUserAssignments.Where(a => a.CompanyId == subCompanyId);
-                _db.CompanySuperUserAssignments.RemoveRange(existing);
+                var existingAssignments =
+                    await _db.CompanySuperUserAssignments
+                        .Where(a =>
+                            a.CompanyId == subCompanyId)
+                        .ToListAsync();
+
+                _db.CompanySuperUserAssignments
+                    .RemoveRange(existingAssignments);
             }
 
-            foreach (var uid in validParentSuperUsers)
+            foreach (var uid in validParentSuperUsers.Distinct())
             {
-                _db.CompanySuperUserAssignments.Add(new CompanySuperUserAssignment
-                {
-                    CompanyId = subCompanyId,
-                    UserId = uid
-                });
+                _db.CompanySuperUserAssignments.Add(
+                    new CompanySuperUserAssignment
+                    {
+                        CompanyId = subCompanyId,
+                        UserId = uid
+                    }
+                );
             }
 
             await _db.SaveChangesAsync();

@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 
 namespace VeiraMal.API.DTOs
 {
@@ -11,5 +12,9 @@ namespace VeiraMal.API.DTOs
         public string? Location { get; set; }
         public Guid ParentCompanyId { get; set; }
         public DateTime CreatedAt { get; set; }
+
+        // Parent-company Superusers currently assigned
+        // to manage this subcompany.
+        public int[] AssignedSuperUserIds { get; set; } = Array.Empty<int>();
     }
 }

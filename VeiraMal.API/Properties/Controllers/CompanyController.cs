@@ -255,61 +255,99 @@ namespace VeiraMal.API.Properties.Controllers
         [HttpGet("{parentCompanyId:guid}/subcompanies")]
         public async Task<IActionResult> ListSubCompanies(Guid parentCompanyId)
         {
-            var list = await _companyService.ListSubCompaniesAsync(parentCompanyId);
+            var list =
+                await _companyService.ListSubCompaniesAsync(
+                    parentCompanyId
+                );
+
             return Ok(list);
         }
 
         // GET: /api/companies/{parentCompanyId}/subcompanies/{subCompanyId}
         [HttpGet("{parentCompanyId:guid}/subcompanies/{subCompanyId:guid}")]
-        public async Task<IActionResult> GetSubCompany(Guid parentCompanyId, Guid subCompanyId)
-        {
-            var subList = await _companyService.ListSubCompaniesAsync(parentCompanyId);
-            var sub = subList.FirstOrDefault(s => s.CompanyId == subCompanyId);
+        public async Task<IActionResult> GetSubCompany(
+        Guid parentCompanyId,
+        Guid subCompanyId)
+            {
+                var subList =
+                    await _companyService.ListSubCompaniesAsync(
+                        parentCompanyId
+                    );
 
-            if (sub == null)
-                return NotFound();
+                var sub =
+                    subList.FirstOrDefault(
+                        s => s.CompanyId == subCompanyId
+                    );
 
-            return Ok(sub);
-        }
+                if (sub == null)
+                    return NotFound();
+
+                return Ok(sub);
+            }
 
         // GET: /api/companies/{parentCompanyId}/superusers (dropdown list)
         [HttpGet("{parentCompanyId:guid}/superusers")]
-        public async Task<IActionResult> GetParentSuperUsers(Guid parentCompanyId)
-        {
-            var users = await _companyService.GetParentCompanySuperUsersAsync(parentCompanyId);
-
-            // map to minimal DTO for dropdown (UserId, FullName, Email)
-            var dto = users.Select(u => new
+        public async Task<IActionResult> GetParentSuperUsers(
+        Guid parentCompanyId)
             {
-                u.UserId,
-                FullName = $"{u.FirstName} {(u.LastName ?? "")}".Trim(),
-                u.Email
-            });
+                var users =
+                    await _companyService
+                        .GetParentCompanySuperUsersAsync(
+                            parentCompanyId
+                        );
 
-            return Ok(dto);
-        }
+                var dto = users.Select(u => new
+                {
+                    u.UserId,
+                    FullName =
+                        $"{u.FirstName} {(u.LastName ?? "")}".Trim(),
+                    u.Email
+                });
+
+                return Ok(dto);
+            }
 
         // POST: /api/companies/{parentCompanyId}/subcompanies/{subCompanyId}/assign-superusers
         [HttpPost("{parentCompanyId:guid}/subcompanies/{subCompanyId:guid}/assign-superusers")]
         public async Task<IActionResult> AssignSuperUsers(
-            Guid parentCompanyId,
-            Guid subCompanyId,
-            [FromBody] AssignSuperUsersDto dto)
+    Guid parentCompanyId,
+    Guid subCompanyId,
+    [FromBody] AssignSuperUsersDto dto)
         {
             try
             {
-                // authorization: verify caller is allowed
                 await _companyService.AssignSuperUsersToSubCompanyAsync(
                     parentCompanyId,
                     subCompanyId,
-                    dto.UserIds,
-                    replaceExisting: true);
+                    dto.UserIds ?? Array.Empty<int>(),
+                    replaceExisting: true
+                );
 
                 return Ok(new { success = true });
             }
-            catch (Exception ex)
+            catch (ArgumentException ex)
             {
                 return BadRequest(new { error = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { error = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Error assigning Superusers to subcompany {SubCompanyId}",
+                    subCompanyId
+                );
+
+                return StatusCode(
+                    500,
+                    new
+                    {
+                        error = "An error occurred while assigning Superusers."
+                    }
+                );
             }
         }
 
