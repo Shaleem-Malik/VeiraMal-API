@@ -45,6 +45,9 @@ namespace VeiraMal.API
         public DbSet<EmployeeLiability> EmployeeLiabilities { get; set; }
 
         public DbSet<UserPasswordHistory> UserPasswordHistories { get; set; }
+        public DbSet<HrEngagementScore> HrEngagementScores { get; set; }
+        public DbSet<HrOpenRole> HrOpenRoles { get; set; }
+        public DbSet<HrAnalyticsSettings> HrAnalyticsSettings { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -106,6 +109,57 @@ namespace VeiraMal.API
 
             modelBuilder.Entity<UserPasswordHistory>()
                 .HasIndex(x => new { x.UserId, x.CreatedAtUtc });
+
+            modelBuilder.Entity<HrEngagementScore>()
+                .HasIndex(x => new { x.CompanyId, x.EmployeeId, x.SurveyDate });
+
+            modelBuilder.Entity<HrOpenRole>()
+                .HasIndex(x => new { x.CompanyId, x.Department, x.AsOfDate });
+
+            modelBuilder.Entity<Employee>(entity =>
+            {
+                entity.Property(x => x.EmployeeName).HasMaxLength(300);
+                entity.Property(x => x.Email).HasMaxLength(320);
+                entity.Property(x => x.TerminationReason).HasMaxLength(300);
+                entity.Property(x => x.EmployeeType).HasMaxLength(150);
+                entity.Property(x => x.WorkArrangement).HasMaxLength(150);
+                entity.Property(x => x.Ethnicity).HasMaxLength(150);
+                entity.Property(x => x.CostCentre).HasMaxLength(150);
+                entity.Property(x => x.EmployeeStatus).HasMaxLength(100);
+            });
+
+            modelBuilder.Entity<HrEngagementScore>(entity =>
+            {
+                entity.Property(x => x.EmployeeId).HasMaxLength(150).IsRequired();
+                entity.Property(x => x.Score).HasColumnType("decimal(5,2)");
+            });
+
+            modelBuilder.Entity<HrOpenRole>(entity =>
+            {
+                entity.Property(x => x.Department).HasMaxLength(200).IsRequired();
+                entity.Property(x => x.RoleTitle).HasMaxLength(250);
+                entity.Property(x => x.Status).HasMaxLength(100);
+            });
+
+            modelBuilder.Entity<HrAnalyticsSettings>(entity =>
+            {
+                entity.Property(x => x.TurnoverHealthyThreshold).HasColumnType("decimal(5,2)");
+                entity.Property(x => x.TurnoverWatchThreshold).HasColumnType("decimal(5,2)");
+                entity.Property(x => x.AbsenceHealthyThreshold).HasColumnType("decimal(5,2)");
+                entity.Property(x => x.AbsenceWatchThreshold).HasColumnType("decimal(5,2)");
+                entity.Property(x => x.Currency).HasMaxLength(10).IsRequired();
+                entity.HasIndex(x => x.CompanyId).IsUnique();
+            });
+
+            modelBuilder.Entity<Employee>()
+                .HasIndex(x => new { x.CompanyId, x.EmployeeId })
+                .IsUnique();
+
+            modelBuilder.Entity<LeaveTaken>()
+                .HasIndex(x => new { x.CompanyId, x.PersonnelNumber, x.StartDate });
+
+            modelBuilder.Entity<UploadBatch>()
+                .HasIndex(x => new { x.CompanyId, x.CreatedAt });
 
             // Seed subscription plans (GUIDs are fixed so migrations stay stable)
             var demoId = Guid.Parse("11111111-1111-1111-1111-111111111111");

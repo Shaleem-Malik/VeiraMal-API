@@ -16,9 +16,14 @@ using Microsoft.AspNetCore.Http;
 using System.Linq;
 using System.Collections.Generic;
 
-ExcelPackage.License.SetNonCommercialPersonal("Your Name");
-
 var builder = WebApplication.CreateBuilder(args);
+
+// ============================================================
+// EPPlus 8 License Configuration
+// DEVELOPMENT ONLY - NON-COMMERCIAL USE
+// ============================================================
+
+ExcelPackage.License.SetNonCommercialPersonal("Mujahid");
 
 // ===== EARLY DIAGNOSTICS =====
 Console.WriteLine("🚀 APPLICATION STARTING - CONFIGURATION CHECK");
@@ -59,6 +64,7 @@ builder.Services.AddScoped<ILeaveBalanceService, LeaveBalanceService>();
 builder.Services.AddScoped<ILeaveTakenService, LeaveTakenService>();
 builder.Services.AddScoped<IBaseRatesService, BaseRatesService>();
 builder.Services.AddScoped<ILiabilityService, LiabilityService>();
+builder.Services.AddScoped<IHrAnalyticsService, HrAnalyticsService>();
 
 builder.Services.AddDataProtection();
 builder.Services.AddScoped<IStripeService, StripeService>();

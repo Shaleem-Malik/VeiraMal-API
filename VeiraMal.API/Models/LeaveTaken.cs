@@ -4,6 +4,7 @@ namespace VeiraMal.API.Models
 {
     public class LeaveTaken
     {
+        public Guid? CompanyId { get; set; }
         [Key]
         public int Id { get; set; }
 

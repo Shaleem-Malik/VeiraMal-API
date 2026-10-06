@@ -2,9 +2,12 @@ namespace VeiraMal.API.Models
 {
     public class Employee
     {
+        public Guid? CompanyId { get; set; }
         public int Id { get; set; } // Auto-increment primary key (DB ID)
 
-        public string? EmployeeId { get; set; }           // E001, E002, etc.
+        public string? EmployeeId { get; set; }
+        public string? EmployeeName { get; set; }
+        public string? Email { get; set; }           // E001, E002, etc.
         public string? Gender { get; set; }
         public decimal BaseSalary { get; set; }
         public decimal TotalRemuneration { get; set; }
@@ -17,6 +20,13 @@ namespace VeiraMal.API.Models
 
         public DateTime DateOfBirth { get; set; }
         public DateTime HireDate { get; set; }
+        public DateTime? ExitDate { get; set; }
+        public string? TerminationReason { get; set; }
+        public string? EmployeeType { get; set; }
+        public string? WorkArrangement { get; set; }
+        public string? Ethnicity { get; set; }
+        public string? CostCentre { get; set; }
+        public string? EmployeeStatus { get; set; }
 
         public string? PositionTitle { get; set; }
         public string? ManagerEmployeeId { get; set; }

@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using VeiraMal.API;
 
@@ -11,9 +12,11 @@ using VeiraMal.API;
 namespace VeiraMal.API.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260913175856_AddSecureHrAnalytics")]
+    partial class AddSecureHrAnalytics
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -476,57 +479,6 @@ namespace VeiraMal.API.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("Headcounts", (string)null);
-                });
-
-            modelBuilder.Entity("VeiraMal.API.Models.HrAnalyticsSettings", b =>
-                {
-                    b.Property<int>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int");
-
-                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
-
-                    b.Property<decimal>("AbsenceHealthyThreshold")
-                        .HasColumnType("decimal(5,2)");
-
-                    b.Property<decimal>("AbsenceWatchThreshold")
-                        .HasColumnType("decimal(5,2)");
-
-                    b.Property<Guid>("CompanyId")
-                        .HasColumnType("uniqueidentifier");
-
-                    b.Property<string>("Currency")
-                        .IsRequired()
-                        .HasMaxLength(10)
-                        .HasColumnType("nvarchar(10)");
-
-                    b.Property<DateTime>("CreatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("RequisitionAgeDays")
-                        .HasColumnType("int");
-
-                    b.Property<int>("RollingAverageWindowMonths")
-                        .HasColumnType("int");
-
-                    b.Property<decimal>("TurnoverHealthyThreshold")
-                        .HasColumnType("decimal(5,2)");
-
-                    b.Property<decimal>("TurnoverWatchThreshold")
-                        .HasColumnType("decimal(5,2)");
-
-                    b.Property<DateTime>("UpdatedAtUtc")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("WorkingDaysPerYear")
-                        .HasColumnType("int");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("CompanyId")
-                        .IsUnique();
-
-                    b.ToTable("HrAnalyticsSettings");
                 });
 
             modelBuilder.Entity("VeiraMal.API.Models.HrEngagementScore", b =>

@@ -5,6 +5,7 @@ using System.Globalization;
 using VeiraMal.API;
 using VeiraMal.API.Models;
 using Microsoft.AspNetCore.Authorization;
+using System.Security.Claims;
 
 namespace VeiraMal.API.Controllers
 {
@@ -28,6 +29,12 @@ namespace VeiraMal.API.Controllers
 
             try
             {
+                if (!string.Equals(User.FindFirstValue("access"), "superUser", StringComparison.OrdinalIgnoreCase))
+                    return Forbid();
+
+                var companyIdValue = User.FindFirstValue("companyId");
+                if (!Guid.TryParse(companyIdValue, out var companyId))
+                    return Unauthorized(new { message = "Invalid company context." });
                 // EPPlus License Setup for version 8+
                 //ExcelPackage.LicenseContext = LicenseContext.NonCommercial;
 
@@ -43,6 +50,7 @@ namespace VeiraMal.API.Controllers
                 {
                     var employee = new Employee
                     {
+                        CompanyId = companyId,
                         EmployeeId = worksheet.Cells[row, 1].Text,
                         Gender = worksheet.Cells[row, 2].Text,
 
@@ -69,6 +77,9 @@ namespace VeiraMal.API.Controllers
                     employees.Add(employee);
                 }
 
+                // Replace only this tenant's HR employee dataset. Never touch another company's records.
+                _context.Employees.RemoveRange(_context.Employees.Where(e => e.CompanyId == companyId));
+                await _context.SaveChangesAsync();
                 _context.Employees.AddRange(employees);
                 await _context.SaveChangesAsync();
 

@@ -4,6 +4,7 @@ namespace VeiraMal.API.Models
 {
     public class UploadBatch
     {
+        public Guid? CompanyId { get; set; }
         [Key]
         public int Id { get; set; }
         public string? UploadedBy { get; set; }
